@@ -1,0 +1,38 @@
+@startuml Drone_Mission_AI_Overview
+title Drone Mission AI — From a Request to a Mission Report
+
+top to bottom direction
+skinparam componentStyle rectangle
+skinparam packageStyle rectangle
+skinparam shadowing false
+
+component "Mission Request" as Request
+
+note right of Request
+  Send Alpha to inspect sector Bravo.
+  Check safety and report anything unusual.
+end note
+
+package "Drone Mission AI" {
+  component "AI Mission Assistant\nUnderstand the request and plan the mission" as Agent
+
+  component "Inspect the World\nDrone state and conditions" as World
+  component "Retrieve Knowledge\nOperational procedures" as Knowledge
+  component "Analyze Data\nImages and inspection findings" as Analysis
+
+  component "Check Safety\nand Simulate the Mission" as Mission
+}
+
+component "Mission Report\nDecision, findings and explanation" as Report
+
+Request --> Agent
+Agent --> World
+Agent --> Knowledge
+Agent --> Analysis
+World --> Mission
+Knowledge --> Mission
+Analysis --> Mission
+Mission --> Report
+
+
+@enduml

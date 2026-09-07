@@ -1,0 +1,246 @@
+package pl.stalostech.ai_drone_mission_commander;
+
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import com.sun.net.httpserver.HttpServer;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.openai.OpenAiChatModel;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.context.ApplicationContext;
+import org.springframework.http.MediaType;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.web.servlet.MockMvc;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+@SpringBootTest
+@AutoConfigureMockMvc
+@ActiveProfiles("test")
+class AiDroneMissionCommanderApplicationTests {
+
+    private static final String QUESTION =
+            "What should a drone operator check before an inspection mission?";
+    private static final String ANSWER = "Check battery, weather, GPS and the inspection area.";
+    private static final String PROVIDER_RESPONSE = """
+            {
+              "id": "chatcmpl-test",
+              "object": "chat.completion",
+              "created": 1700000000,
+              "model": "test-model",
+              "choices": [{
+                "index": 0,
+                "message": {
+                  "role": "assistant",
+                  "content": "Check battery, weather, GPS and the inspection area."
+                },
+                "finish_reason": "stop"
+              }],
+              "usage": {"prompt_tokens": 20, "completion_tokens": 12, "total_tokens": 32}
+            }
+            """;
+    private static final BlockingQueue<RecordedRequest> REQUESTS = new LinkedBlockingQueue<>();
+    private static final AtomicReference<String> RESPONSE = new AtomicReference<>(PROVIDER_RESPONSE);
+    private static final AtomicInteger PROVIDER_STATUS = new AtomicInteger(200);
+    private static final HttpServer PROVIDER = startProvider();
+
+    @Autowired
+    private MockMvc mvc;
+
+    @Autowired
+    private ObjectMapper objectMapper;
+
+    @Autowired
+    private ApplicationContext context;
+
+    @DynamicPropertySource
+    static void configureLocalProvider(DynamicPropertyRegistry registry) {
+        // Override even credentials inherited from the developer's environment.
+        registry.add("spring.ai.model.chat", () -> "openai");
+        registry.add("spring.ai.openai.api-key", () -> "test-only-not-a-real-key");
+        registry.add("spring.ai.openai.base-url",
+                () -> "http://127.0.0.1:" + PROVIDER.getAddress().getPort() + "/v1");
+        registry.add("spring.ai.openai.chat.api-key", () -> "test-only-not-a-real-key");
+        registry.add("spring.ai.openai.chat.base-url",
+                () -> "http://127.0.0.1:" + PROVIDER.getAddress().getPort() + "/v1");
+        registry.add("spring.ai.openai.chat.options.model", () -> "test-model");
+        // Keep production retry behavior unchanged; these tests exercise a single attempt.
+        registry.add("spring.ai.openai.max-retries", () -> 0);
+        registry.add("spring.ai.openai.chat.max-retries", () -> 0);
+        registry.add("spring.ai.openai.timeout", () -> "2s");
+        registry.add("spring.ai.openai.chat.timeout", () -> "2s");
+    }
+
+    @BeforeEach
+    void resetProvider() {
+        REQUESTS.clear();
+        RESPONSE.set(PROVIDER_RESPONSE);
+        PROVIDER_STATUS.set(200);
+    }
+
+    @AfterAll
+    static void stopProvider() {
+        PROVIDER.stop(0);
+    }
+
+    @Test
+    void contextLoads() {
+        assertThat(context.getBeansOfType(ChatModel.class)).hasSize(1);
+        assertThat(context.getBean(ChatModel.class)).isInstanceOf(OpenAiChatModel.class);
+        ChatClient.Builder builder = context.getBean(ChatClient.Builder.class);
+        assertThat(builder.build()).isNotNull();
+        assertThat(context.getBean(ChatClient.Builder.class)).isNotSameAs(builder);
+        assertThat(REQUESTS).isEmpty();
+    }
+
+    @Test
+    void servesSwaggerUiAndItsLocalApiDefinition() throws Exception {
+        mvc.perform(get("/swagger-ui.html"))
+                .andExpect(status().is3xxRedirection())
+                .andExpect(redirectedUrl("/swagger-ui/index.html"));
+        var page = mvc.perform(get("/swagger-ui/index.html"))
+                .andExpect(status().isOk()).andReturn();
+        assertThat(page.getResponse().getContentAsString()).contains("Swagger UI", "swagger-ui-bundle.js");
+        mvc.perform(get("/swagger-ui/swagger-ui-bundle.js")).andExpect(status().isOk());
+        var initializer = mvc.perform(get("/swagger-ui/swagger-initializer.js"))
+                .andExpect(status().isOk()).andReturn();
+        assertThat(initializer.getResponse().getContentAsString()).contains("/v3/api-docs/swagger-config");
+        mvc.perform(get("/v3/api-docs/swagger-config"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.url").value("/v3/api-docs"));
+        assertThat(REQUESTS).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/api/chat", "/api/chat/model"})
+    void documentsChatContractAndProvidesAnExecutableExample(String endpoint) throws Exception {
+        var result = mvc.perform(get("/v3/api-docs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.info.title").value("Drone Mission AI"))
+                .andExpect(jsonPath("$.components.schemas.ChatRequest.required[0]").value("message"))
+                .andExpect(jsonPath("$.components.schemas.ChatRequest.properties.message.type").value("string"))
+                .andReturn();
+        JsonNode spec = objectMapper.readTree(result.getResponse().getContentAsString());
+        assertThat(spec.path("paths").size()).isEqualTo(2);
+        JsonNode operation = spec.path("paths").path(endpoint).path("post");
+        assertThat(operation.path("summary").asText()).isNotBlank();
+        assertThat(operation.at("/requestBody/content/application~1json/schema/$ref").asText())
+                .isEqualTo("#/components/schemas/ChatRequest");
+        assertThat(operation.at("/responses/200/content/application~1json/schema/$ref").asText())
+                .isEqualTo("#/components/schemas/ChatReply");
+        for (String code : new String[]{"400", "502", "503"}) {
+            assertThat(operation.path("responses").path(code).path("description").asText()).isNotBlank();
+        }
+        String example = spec.at("/components/schemas/ChatRequest/properties/message/example").asText();
+        assertThat(example).isEqualTo(QUESTION);
+        assertThat(REQUESTS).isEmpty();
+        mvc.perform(post(endpoint).contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new Message(example))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.message").value(ANSWER));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/api/chat", "/api/chat/model"})
+    void answersPreflightQuestionAndExposesProviderMetadata(String endpoint) throws Exception {
+        mvc.perform(post(endpoint).contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new Message(QUESTION))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.message").value(ANSWER))
+                .andExpect(jsonPath("$.metadata.id").value("chatcmpl-test"))
+                .andExpect(jsonPath("$.metadata.model").value("test-model"))
+                .andExpect(jsonPath("$.metadata.finishReason").value("STOP"))
+                .andExpect(jsonPath("$.metadata.promptTokens").value(20))
+                .andExpect(jsonPath("$.metadata.completionTokens").value(12))
+                .andExpect(jsonPath("$.metadata.totalTokens").value(32));
+
+        RecordedRequest request = REQUESTS.poll(1, TimeUnit.SECONDS);
+        assertThat(request).isNotNull();
+        assertThat(request.method()).isEqualTo("POST");
+        assertThat(request.path()).isEqualTo("/v1/chat/completions");
+        assertThat(request.authorization()).isEqualTo("Bearer test-only-not-a-real-key");
+        JsonNode body = objectMapper.readTree(request.body());
+        assertThat(body.path("model").asText()).isEqualTo("test-model");
+        assertThat(body.path("messages").size()).isEqualTo(2);
+        assertThat(body.at("/messages/0/role").asText()).isEqualTo("system");
+        assertThat(body.at("/messages/0/content").asText()).contains("cannot execute drone missions");
+        assertThat(body.at("/messages/1/role").asText()).isEqualTo("user");
+        assertThat(body.at("/messages/1/content").asText()).isEqualTo(QUESTION);
+        assertThat(REQUESTS).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {429, -1})
+    void handlesRealSdkRateLimitAndConnectionFailureWithoutRetryDelays(int providerStatus) throws Exception {
+        PROVIDER_STATUS.set(providerStatus);
+        RESPONSE.set("""
+                {"error":{"message":"sensitive-provider-detail","code":"rate_limit_exceeded"}}
+                """);
+        var result = mvc.perform(post("/api/chat/model").contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new Message(QUESTION))))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.title").value("AI provider error"))
+                .andReturn();
+        assertThat(result.getResponse().getContentAsString()).doesNotContain("sensitive-provider-detail");
+        assertThat(REQUESTS).isNotEmpty();
+        if (providerStatus == 429) {
+            assertThat(REQUESTS).hasSize(1);
+        }
+    }
+
+    private static HttpServer startProvider() {
+        try {
+            HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            server.createContext("/", exchange -> {
+                try (exchange) {
+                    REQUESTS.add(new RecordedRequest(exchange.getRequestMethod(),
+                            exchange.getRequestURI().getPath(),
+                            exchange.getRequestHeaders().getFirst("Authorization"),
+                            new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)));
+                    if (PROVIDER_STATUS.get() == -1) {
+                        // Simulate a dropped connection, including any SDK retry attempts.
+                        return;
+                    }
+                    byte[] body = RESPONSE.get().getBytes(StandardCharsets.UTF_8);
+                    exchange.getResponseHeaders().set("Content-Type", "application/json");
+                    exchange.sendResponseHeaders(PROVIDER_STATUS.get(), body.length);
+                    exchange.getResponseBody().write(body);
+                }
+            });
+            server.start();
+            return server;
+        }
+        catch (IOException exception) {
+            throw new ExceptionInInitializerError(exception);
+        }
+    }
+
+    private record Message(String message) {
+    }
+
+    private record RecordedRequest(String method, String path, String authorization, String body) {
+    }
+}
