@@ -7,6 +7,9 @@ import com.openai.errors.OpenAIIoException;
 import com.openai.core.http.Headers;
 import com.openai.errors.UnauthorizedException;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.api.Test;
+import org.springframework.ai.openai.OpenAiChatOptions;
+import reactor.core.publisher.Flux;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -24,9 +27,11 @@ import pl.stalostech.ai_drone_mission_commander.agent.ChatService;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@WebMvcTest(ChatController.class)
+@WebMvcTest({ChatController.class, ChatStreamController.class})
 @ActiveProfiles("test")
 class ChatControllerTest {
 
@@ -70,7 +75,13 @@ class ChatControllerTest {
                 Stream.of("{}", "{\"message\":null}", "{\"message\":\"\"}",
                                 "{\"message\":\"   \"}", "null", "{", "",
                                 "{\"message\":42}", "{\"message\":1.5}", "{\"message\":true}",
-                                "{\"message\":false}", "{\"message\":[]}", "{\"message\":{}}")
+                                "{\"message\":false}", "{\"message\":[]}", "{\"message\":{}}",
+                                "{\"message\":\"Hi\",\"options\":{\"maxCompletionTokens\":0}}",
+                                "{\"message\":\"Hi\",\"options\":{\"maxCompletionTokens\":-1}}",
+                                "{\"message\":\"Hi\",\"options\":{\"maxCompletionTokens\":1.5}}",
+                                "{\"message\":\"Hi\",\"options\":{\"maxCompletionTokens\":\"100\"}}",
+                                "{\"message\":\"Hi\",\"options\":{\"model\":\" \"}}",
+                                "{\"message\":\"Hi\",\"options\":{\"model\":42}}")
                         .map(body -> Arguments.of(endpoint, body)));
     }
 
@@ -112,5 +123,62 @@ class ChatControllerTest {
     static Stream<Arguments> providerErrors() {
         return Stream.of("/api/chat", "/api/chat/model").flatMap(endpoint ->
                 Stream.of(502, 503).map(code -> Arguments.of(endpoint, code)));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/api/chat", "/api/chat/model"})
+    void passesRequestOptionsToService(String endpoint) throws Exception {
+        var reply = new ChatResponse(List.of(new Generation(new AssistantMessage("Answer"))));
+        if (endpoint.endsWith("/model")) {
+            when(service.chatWithModel(eq("Hi"), any(OpenAiChatOptions.Builder.class))).thenReturn(reply);
+        } else {
+            when(service.chat(eq("Hi"), any(OpenAiChatOptions.Builder.class))).thenReturn(reply);
+        }
+        mvc.perform(post(endpoint).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"message\":\"Hi\",\"options\":{\"model\":\"request-model\",\"maxCompletionTokens\":128}}"))
+                .andExpect(status().isOk());
+        var options = org.mockito.ArgumentCaptor.forClass(OpenAiChatOptions.Builder.class);
+        if (endpoint.endsWith("/model")) {
+            verify(service).chatWithModel(eq("Hi"), options.capture());
+        } else {
+            verify(service).chat(eq("Hi"), options.capture());
+        }
+        assertThat(options.getValue().build().getModel()).isEqualTo("request-model");
+        assertThat(options.getValue().build().getMaxCompletionTokens()).isEqualTo(128);
+    }
+
+    @Test
+    void servesSseFramesWithoutBufferingIntoAJsonArray() throws Exception {
+        when(service.stream(eq("Hi"), any())).thenReturn(Flux.just("Hello", " world"));
+        var pending = mvc.perform(get("/api/chat/stream").param("message", "Hi")
+                        .accept(MediaType.TEXT_EVENT_STREAM))
+                .andExpect(request().asyncStarted()).andReturn();
+        pending.getAsyncResult(5000);
+        var result = mvc.perform(asyncDispatch(pending))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_EVENT_STREAM)).andReturn();
+        assertThat(result.getResponse().getContentAsString()).contains("event:delta", "event:done", "\"text\":\"Hello\"", "\"text\":\" world\"");
+    }
+
+    @Test
+    void providerFailureAtStreamStartIsAnSseError() throws Exception {
+        when(service.stream(eq("Hi"), any())).thenReturn(Flux.error(new OpenAIIoException("secret-detail")));
+        var pending = mvc.perform(get("/api/chat/stream").param("message", "Hi"))
+                .andExpect(request().asyncStarted()).andReturn();
+        pending.getAsyncResult(5000);
+        var result = mvc.perform(asyncDispatch(pending)).andExpect(status().isOk()).andReturn();
+        assertThat(result.getResponse().getContentAsString()).contains("event:error", "\"status\":503")
+                .doesNotContain("event:done", "secret-detail");
+    }
+
+    @Test
+    void rejectsBadStreamParametersBeforeCallingService() throws Exception {
+        mvc.perform(get("/api/chat/stream")).andExpect(status().isBadRequest());
+        mvc.perform(get("/api/chat/stream").param("message", " ")).andExpect(status().isBadRequest());
+        mvc.perform(get("/api/chat/stream").param("message", "Hi").param("maxCompletionTokens", "1.5"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(get("/api/chat/stream").param("message", "Hi").param("maxCompletionTokens", "-1"))
+                .andExpect(status().isBadRequest());
+        verifyNoInteractions(service);
     }
 }

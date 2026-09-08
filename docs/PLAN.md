@@ -243,14 +243,19 @@ Understand how Spring AI controls model behavior and response delivery.
 
 ### Tasks
 
-* [ ] Add default system prompt
-* [ ] Move system prompt to a reusable place
-* [ ] Experiment with system instructions
-* [ ] Add model options
-* [ ] Understand default options vs request-specific options
-* [ ] Add streaming endpoint
-* [ ] Compare `.call()` and `.stream()`
-* [ ] Inspect streaming response flow
+* [x] Add default system prompt
+* [x] Move system prompt to a reusable place
+* [x] Experiment with system instructions
+* [x] Add model options
+* [x] Understand default options vs request-specific options
+* [x] Add streaming endpoint
+* [x] Compare `.call()` and `.stream()`
+* [x] Inspect streaming response flow
+
+Implementation and experiments: [Milestone 2 notes](article-notes.md).
+Resource variants are tested without a live model; the notes provide a manual
+comparison procedure for response quality. Streaming integration verifies that
+the first fragment arrives before the provider finishes.
 
 ### Example System Prompt
 

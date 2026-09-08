@@ -44,12 +44,15 @@ The test suite separates fast checks from HTTP integration:
 
 - Plain JUnit tests cover response mapping, provider error classification and safe
   logging. `ChatServiceTest` uses a mocked `ChatModel` with a real `ChatClient` to
-  verify prompt construction and literal user input without networking.
+  verify prompt construction, alternative system instructions, literal user input
+  and stream cancellation without networking. Stream controller tests cover event
+  ordering and failures using Reactor's `StepVerifier`.
 - `ChatControllerTest` uses `@WebMvcTest` and a mocked `ChatService` to check routing,
   JSON validation, empty answers and error responses without creating an AI client.
-- Eight full-context tests in `AiDroneMissionCommanderApplicationTests` verify real
+- A small full-context suite in `AiDroneMissionCommanderApplicationTests` verifies real
   model/builder autoconfiguration, Swagger, both chat flows and representative HTTP
-  and connection failures against a local provider stub.
+  and connection failures against a local provider stub. It also checks option
+  overrides without leakage and incremental delivery from a streaming provider.
 
 The `test` profile disables AI models by default. Only the integration tests enable
 the chat model, override credentials with a dummy key and point it at localhost.
@@ -163,8 +166,78 @@ Billing and quota errors require correcting the relevant credits or limits; repe
 requests alone do not resolve them. See the [official OpenAI error guide](https://developers.openai.com/api/docs/guides/error-codes).
 
 The chat model uses the starter's default model unless overridden with
-`SPRING_AI_OPENAI_CHAT_OPTIONS_MODEL`. Actual provider calls require a valid key
+`SPRING_AI_OPENAI_CHAT_MODEL`. Actual provider calls require a valid key
 and access to the selected model.
 
-See [Milestone 1 notes](docs/article-notes.md#milestone-1--spring-ai-fundamentals)
-for the API comparison, message flow, metadata and verification details.
+## Prompts, options and streaming (Milestone 2)
+
+All three chat paths use the system instructions in
+[`mission-assistant.st`](src/main/resources/prompts/mission-assistant.st).
+Edit this resource and restart the application to experiment with response style.
+User input remains a separate `UserMessage`, including literal JSON or braces.
+
+The default completion budget is 2048 tokens, configurable with
+`SPRING_AI_OPENAI_CHAT_MAX_COMPLETION_TOKENS`. The model uses the starter default
+unless `SPRING_AI_OPENAI_CHAT_MODEL` is configured. Temperature is left unset;
+supported options depend on the selected model. Completion budgets can include
+reasoning tokens, so a very small budget may leave no visible answer.
+
+Both POST endpoints accept optional overrides:
+
+```bash
+curl --fail-with-body http://localhost:8080/api/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Give me a short preflight checklist.","options":{"maxCompletionTokens":1024}}'
+```
+
+Add `"model":"your-accessible-model"` inside `options` to select a model for that
+request. Omitted fields retain the configured defaults; overrides do not affect
+later requests. Blank models and nonpositive or noninteger token limits return 400.
+
+The POST endpoints use `.call()` and return a complete answer with metadata.
+`GET /api/chat/stream` uses `.stream().chatResponse()` to validate completion metadata
+and deliver text fragments as SSE:
+
+```bash
+curl -N --get http://localhost:8080/api/chat/stream \
+  --data-urlencode 'message=What should I check before sending Alpha to Bravo?' \
+  --data-urlencode 'maxCompletionTokens=2048'
+```
+
+It also accepts an optional `model` query parameter. Example wire output:
+
+```text
+event:delta
+data:{"text":"Check "}
+
+event:delta
+data:{"text":"battery and weather."}
+
+event:done
+data:{}
+
+```
+
+Concatenate each `delta.text` exactly, preserving spaces. Fragments are not
+necessarily single tokens. Streaming does not include the POST response metadata.
+Success ends with `done`; a provider failure ends with `error`, including after
+partial output. Its JSON contains an `error` Problem Detail with a sanitized
+`status` and `detail`. An empty or whitespace-only stream produces an error with
+status 502. A stream ending without a generation finish reason also produces 502,
+even if the provider closes its HTTP response without a transport error.
+
+Invalid query parameters return HTTP 400 before streaming. Provider failures are
+encoded as SSE `error` events under HTTP 200, even if no text has arrived yet;
+clients must inspect events rather than just the HTTP status. Partial text followed
+by `error` is an incomplete answer. Close browser `EventSource` connections on
+`done` or a server `error` event to avoid automatic reconnection and another call.
+
+Use `Ctrl+C` to disconnect curl. Cancellation propagates upstream when Spring MVC
+detects disconnection, typically on a subsequent write; detection is not immediate
+while the provider is silent. The MVC async timeout is 120 seconds, configurable
+with `SPRING_MVC_ASYNC_REQUEST_TIMEOUT`. A broken connection or timeout may end
+without a terminal SSE event. Proxies can buffer SSE; disable their buffering if needed.
+
+Swagger UI documents the streaming endpoint, but `curl -N` is the simplest way to
+observe incremental arrival. See [Milestone 2 notes](docs/article-notes.md) and
+[scenarios](docs/scenarios.md) for the implementation and prompt experiment.

@@ -11,7 +11,12 @@ public record ChatRequest(
         @Schema(type = "string", description = "A nonblank question for the drone mission assistant",
                 example = "What should a drone operator check before an inspection mission?",
                 minLength = 1, requiredMode = Schema.RequiredMode.REQUIRED)
-        @JsonDeserialize(using = ChatRequest.MessageDeserializer.class) String message) {
+        @JsonDeserialize(using = ChatRequest.MessageDeserializer.class) String message,
+        ChatRequestOptions options) {
+
+    public ChatRequest(String message) {
+        this(message, null);
+    }
 
     public static class MessageDeserializer extends ValueDeserializer<String> {
 

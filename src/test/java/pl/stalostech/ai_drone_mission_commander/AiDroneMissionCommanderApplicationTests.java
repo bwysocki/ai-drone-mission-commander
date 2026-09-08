@@ -6,6 +6,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -33,6 +35,9 @@ import tools.jackson.databind.ObjectMapper;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
+import static org.awaitility.Awaitility.await;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -65,6 +70,9 @@ class AiDroneMissionCommanderApplicationTests {
     private static final BlockingQueue<RecordedRequest> REQUESTS = new LinkedBlockingQueue<>();
     private static final AtomicReference<String> RESPONSE = new AtomicReference<>(PROVIDER_RESPONSE);
     private static final AtomicInteger PROVIDER_STATUS = new AtomicInteger(200);
+    private static final AtomicBoolean STREAM_RESPONSE = new AtomicBoolean();
+    private static final AtomicReference<String> STREAM_BODY = new AtomicReference<>();
+    private static final AtomicReference<CountDownLatch> STREAM_REST = new AtomicReference<>(new CountDownLatch(0));
     private static final HttpServer PROVIDER = startProvider();
 
     @Autowired
@@ -99,6 +107,9 @@ class AiDroneMissionCommanderApplicationTests {
         REQUESTS.clear();
         RESPONSE.set(PROVIDER_RESPONSE);
         PROVIDER_STATUS.set(200);
+        STREAM_RESPONSE.set(false);
+        STREAM_BODY.set(null);
+        STREAM_REST.set(new CountDownLatch(0));
     }
 
     @AfterAll
@@ -144,7 +155,10 @@ class AiDroneMissionCommanderApplicationTests {
                 .andExpect(jsonPath("$.components.schemas.ChatRequest.properties.message.type").value("string"))
                 .andReturn();
         JsonNode spec = objectMapper.readTree(result.getResponse().getContentAsString());
-        assertThat(spec.path("paths").size()).isEqualTo(2);
+        assertThat(spec.path("paths").size()).isEqualTo(3);
+        JsonNode streaming = spec.path("paths").path("/api/chat/stream").path("get");
+        assertThat(streaming.at("/responses/200/content/text~1event-stream").isMissingNode()).isFalse();
+        assertThat(streaming.path("parameters").size()).isEqualTo(3);
         JsonNode operation = spec.path("paths").path(endpoint).path("post");
         assertThat(operation.path("summary").asText()).isNotBlank();
         assertThat(operation.at("/requestBody/content/application~1json/schema/$ref").asText())
@@ -211,6 +225,91 @@ class AiDroneMissionCommanderApplicationTests {
         }
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"/api/chat", "/api/chat/model"})
+    void requestOptionsOverrideDefaultsWithoutLeakingIntoLaterRequests(String endpoint) throws Exception {
+        for (String options : new String[]{"{\"model\":\"request-model\",\"maxCompletionTokens\":128}",
+                "{\"maxCompletionTokens\":64}", "null"}) {
+            mvc.perform(post(endpoint).contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"message\":\"Hi\",\"options\":" + options + "}"))
+                    .andExpect(status().isOk());
+            var sent = REQUESTS.poll(1, TimeUnit.SECONDS);
+            assertThat(sent).isNotNull();
+            var body = objectMapper.readTree(sent.body());
+            assertThat(body.path("model").asText()).isEqualTo(options.contains("request-model") ? "request-model" : "test-model");
+            assertThat(body.path("max_completion_tokens").asInt()).isEqualTo(
+                    options.equals("null") ? 2048 : options.contains("128") ? 128 : 64);
+            assertThat(body.path("temperature").isMissingNode()).isTrue();
+        }
+    }
+
+    @Test
+    @org.junit.jupiter.api.extension.ExtendWith(org.springframework.boot.test.system.OutputCaptureExtension.class)
+    void encodesStreamingProviderRateLimitAsASanitizedEvent(
+            org.springframework.boot.test.system.CapturedOutput output) throws Exception {
+        PROVIDER_STATUS.set(429);
+        RESPONSE.set("""
+                {"error":{"message":"sensitive-provider-detail","code":"rate_limit_exceeded"}}
+                """);
+        var pending = mvc.perform(get("/api/chat/stream").param("message", QUESTION))
+                .andExpect(request().asyncStarted()).andReturn();
+        pending.getAsyncResult(5000);
+        var result = mvc.perform(asyncDispatch(pending)).andExpect(status().isOk()).andReturn();
+        assertThat(result.getResponse().getContentAsString())
+                .contains("event:error", "\"status\":503")
+                .doesNotContain("event:done", "event:delta", "sensitive-provider-detail");
+        assertThat(REQUESTS).hasSize(1);
+        assertThat(output.getAll()).contains("providerStatus=429").doesNotContain("sensitive-provider-detail");
+    }
+
+    @Test
+    void streamsFirstFragmentBeforeProviderCompletes() throws Exception {
+        STREAM_RESPONSE.set(true);
+        var release = new CountDownLatch(1);
+        STREAM_REST.set(release);
+        var pending = mvc.perform(get("/api/chat/stream").param("message", QUESTION)
+                        .param("maxCompletionTokens", "64"))
+                .andExpect(request().asyncStarted()).andReturn();
+        try {
+            await().atMost(java.time.Duration.ofSeconds(2)).untilAsserted(() ->
+                    assertThat(pending.getResponse().getContentAsString()).contains("Check "));
+            assertThat(pending.getResponse().getContentAsString()).doesNotContain("event:done", "battery.");
+        } finally {
+            release.countDown();
+        }
+        pending.getAsyncResult(5000);
+        var result = mvc.perform(asyncDispatch(pending)).andExpect(status().isOk()).andReturn();
+        assertThat(result.getResponse().getContentAsString()).contains("event:delta", "Check ", "battery.", "event:done")
+                .doesNotContain("event:error");
+        var sent = REQUESTS.poll(1, TimeUnit.SECONDS);
+        assertThat(sent).isNotNull();
+        var body = objectMapper.readTree(sent.body());
+        assertThat(body.path("stream").asBoolean()).isTrue();
+        assertThat(body.path("model").asText()).isEqualTo("test-model");
+        assertThat(body.path("max_completion_tokens").asInt()).isEqualTo(64);
+        assertThat(body.at("/messages/0/content").asText()).contains("Never claim that an action has been executed");
+        assertThat(REQUESTS).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"truncated", "missing-finish", "whitespace"})
+    void rejectsIncompleteOrBlankProviderStreams(String scenario) throws Exception {
+        STREAM_RESPONSE.set(true);
+        STREAM_BODY.set(switch (scenario) {
+            case "truncated" -> streamChunk("Partial answer");
+            case "missing-finish" -> streamChunk("Partial answer") + "data: [DONE]\n\n";
+            default -> streamChunk("   ") + streamFinish();
+        });
+        var pending = mvc.perform(get("/api/chat/stream").param("message", QUESTION))
+                .andExpect(request().asyncStarted()).andReturn();
+        pending.getAsyncResult(5000);
+        var result = mvc.perform(asyncDispatch(pending)).andExpect(status().isOk()).andReturn();
+        assertThat(result.getResponse().getContentAsString())
+                .contains("event:delta", "event:error", "\"status\":502")
+                .doesNotContain("event:done");
+        assertThat(REQUESTS).hasSize(1);
+    }
+
     private static HttpServer startProvider() {
         try {
             HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -222,6 +321,26 @@ class AiDroneMissionCommanderApplicationTests {
                             new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)));
                     if (PROVIDER_STATUS.get() == -1) {
                         // Simulate a dropped connection, including any SDK retry attempts.
+                        return;
+                    }
+                    if (STREAM_RESPONSE.get() && PROVIDER_STATUS.get() == 200) {
+                        exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+                        exchange.sendResponseHeaders(200, 0);
+                        if (STREAM_BODY.get() != null) {
+                            exchange.getResponseBody().write(STREAM_BODY.get().getBytes(StandardCharsets.UTF_8));
+                            return;
+                        }
+                        exchange.getResponseBody().write(streamChunk("Check ").getBytes(StandardCharsets.UTF_8));
+                        exchange.getResponseBody().flush();
+                        try {
+                            if (!STREAM_REST.get().await(3, TimeUnit.SECONDS)) {
+                                return;
+                            }
+                        } catch (InterruptedException exception) {
+                            Thread.currentThread().interrupt();
+                            return;
+                        }
+                        exchange.getResponseBody().write((streamChunk("battery.") + streamFinish()).getBytes(StandardCharsets.UTF_8));
                         return;
                     }
                     byte[] body = RESPONSE.get().getBytes(StandardCharsets.UTF_8);
@@ -239,6 +358,17 @@ class AiDroneMissionCommanderApplicationTests {
     }
 
     private record Message(String message) {
+    }
+
+    private static String streamChunk(String text) {
+        return "data: {\"id\":\"stream-test\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,"
+                + "\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\","
+                + "\"content\":\"" + text + "\"},\"finish_reason\":null}]}\n\n";
+    }
+
+    private static String streamFinish() {
+        return streamChunk("").replace("\"finish_reason\":null", "\"finish_reason\":\"stop\"")
+                + "data: [DONE]\n\n";
     }
 
     private record RecordedRequest(String method, String path, String authorization, String body) {
