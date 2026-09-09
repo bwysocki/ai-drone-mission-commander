@@ -1,132 +1,148 @@
-# Milestone 2 — Prompts, Options and Streaming
+# Milestone 3 — Structured Output
 
 ## Problem
 
-The first chat endpoints returned a complete answer using a fixed system message.
-This milestone makes the instructions reusable, lets callers override generation
-settings and adds incremental delivery while keeping the same Spring MVC application.
-
-## Shared instructions and separate message roles
-
-`src/main/resources/prompts/mission-assistant.st` contains the system prompt.
-`ChatService` reads it through a Spring `Resource` at startup and configures
-`ChatClient.Builder.defaultSystem(...)`. The direct `ChatModel` path uses the same
-text in a `SystemMessage`; each request supplies a separate `UserMessage`.
-User text is passed as a message, so braces in JSON are literal, not template variables.
-
-The prompt tells the assistant to distinguish facts from assumptions and avoid
-claiming execution. It is behavioral guidance, not a safety validator. Actual drone
-execution and deterministic mission safety belong to later milestones.
-
-To experiment, append one of these instructions to the resource, restart and send
-exactly the same preflight question:
-
-1. `Answer with a short numbered checklist.`
-2. `Explain each preflight check and explicitly list missing information.`
-
-Compare length, structure and treatment of missing telemetry. Keep the factual and
-execution constraints in both variants. Automated tests verify that changed resource
-content reaches both call styles; they do not assess the quality of a live model's
-response. No live prompt evaluation was performed for this implementation.
-
-## Default options and request overrides
-
-`application.properties` supplies a completion budget of 2048 tokens. Spring AI
-supplies the default model, or the operator can configure `spring.ai.openai.chat.model`.
-The REST DTO `ChatRequestOptions` exposes only `model` and `maxCompletionTokens`.
-The same values are query parameters on the streaming endpoint.
-
-`ChatInput` validates these values and produces a sparse `OpenAiChatOptions.Builder`.
-The fluent path passes it to `request.options(...)`. The direct model path merges
-it with the configured model options before constructing the `Prompt`:
-
-```java
-var effectiveOptions = options == null ? null : OpenAiChatOptions.builder()
-        .combineWith(chatModel.getOptions().mutate()).combineWith(options).build();
-```
-
-An important discovery in Spring AI 2.0.1: building native `OpenAiChatOptions` too
-soon supplies the native default model even when the request only overrides the
-token budget. Passing that built object's options can silently replace the configured
-model. Keeping overrides as a builder until they are merged preserves omitted values.
-A regression test verifies explicit overrides, a token-only override and a subsequent
-request without overrides for both POST paths. Each request uses fresh options.
-
-Temperature is not forced because model support differs. The completion limit may
-include reasoning tokens; it is not a guaranteed visible answer length.
-
-## One complete response versus a stream
-
-The two paths use the same prompt and options:
-
-```java
-request(message, options).call().chatResponse();  // complete response + metadata
-request(message, options).stream().content();    // Flux<String> text fragments
-```
-
-`ChatService.stream` defers construction until subscription. `ChatStreamController`
-returns `Flux<ServerSentEvent<ChatStreamEvent>>`; Spring MVC subscribes and writes
-SSE through its asynchronous response handling. No application code manually
-subscribes, blocks or collects the entire response.
+A free-form answer cannot serve as a dependable input to mission orchestration.
+This milestone extracts a typed intent from a command such as:
 
 ```text
-GET /api/chat/stream
-  -> MVC subscribes to Flux
-  -> ChatClient -> OpenAiChatModel -> provider streaming HTTP request
-  <- text fragments <- provider chunks
-  -> delta events -> done
+Send Alpha to Bravo, inspect the area and return home.
 ```
 
-Chunks may contain words, spaces or newlines; chunk boundaries are not token
-boundaries. JSON event payloads preserve text safely, including embedded newlines.
-Empty strings are skipped; whitespace fragments are retained.
+The expected domain result is:
 
-The event contract is deliberately small:
+```java
+new MissionIntent("alpha", MissionType.INSPECTION, "BRAVO", true);
+```
 
-| Event | JSON data | Meaning |
-|---|---|---|
-| `delta` | `{"text":"Check "}` | Append the text exactly |
-| `done` | `{}` | Successful completion; close the connection |
-| `error` | `{"error":{"status":503,"detail":"..."}}` | Incomplete answer; close the connection |
+The endpoint is `POST /api/missions/intent`. It interprets a command without checking
+world state or executing a mission. Request and response examples are in the README
+and Swagger UI's Missions group.
 
-Input validation happens before streaming and returns HTTP 400. Provider failures
-are encoded inside an SSE event under HTTP 200, including failures before the first
-text fragment. The controller reuses the existing provider error classifier and
-safe logging; raw provider messages and credentials are not returned. A failed
-stream does not emit `done`. This text-only endpoint does not collect usage metadata.
+## Spring AI concepts
 
-The native async SDK wraps errors in `CompletionException`; the controller unwraps
-async exceptions before classification. Spring AI's `MessageAggregator` otherwise
-logs the full raw provider exception, so that specific logger is disabled. Our
-sanitized handler still logs status, allowlisted code and exception type. A local
-HTTP 429 test verifies both the SSE status and absence of raw provider text in logs.
+`MissionIntentService` creates a dedicated `ChatClient` with instructions loaded
+from `prompts/mission-intent.st`. The user's command is passed as a `UserMessage`,
+so JSON braces in user input remain literal text.
 
-Cancellation propagates through the Flux chain to the provider subscription. With
-Servlet MVC, client disconnection is usually discovered when writing; cancellation
-is not an immediate guarantee during a silent provider interval. A 120-second async
-timeout bounds the MVC request. Network loss or timeout can prevent delivery of a
-terminal event. Clients should treat a stream without `done` as incomplete.
+The service uses `BeanOutputConverter<MissionIntentOutput>` with a strict Jackson
+mapper. The converter derives the provider schema from the output record, supplies
+format instructions and parses the response. The essential call is:
 
-Native browser `EventSource` reconnects automatically, so close it on terminal events.
-Swagger documents the endpoint; use the README's `curl -N` example to see chunks
-arrive without client buffering.
+```java
+var result = client.prompt()
+        .messages(new UserMessage(message))
+        .call()
+        .responseEntity(converter, spec -> {
+            if (nativeOutput) {
+                spec.useProviderStructuredOutput();
+            }
+        });
+```
 
-## Verification without a real model
+`responseEntity` retains both the typed result and the original `ChatResponse`.
+That lets the service require a `STOP` finish reason before accepting the intent.
+A syntactically valid object returned after a token limit or filtering is rejected.
 
-Most checks remain plain JUnit/Mockito or MVC slice tests. `StepVerifier` covers
-fragment order, partial failure, empty streams and cancellation. A real `ChatClient`
-with a mocked `ChatModel` also verifies that cancellation reaches the model publisher.
+Two modes are exposed on the same endpoint:
 
-The existing small full-context suite uses the local HTTP provider stub, dummy
-credentials and disabled retries. Its streaming test deliberately holds back the
-second provider chunk until the first SSE fragment is visible in the MVC response.
-This catches accidental response buffering without waiting for a real model.
-It also verifies the actual outbound model and completion token settings.
+| Request | Schema delivery |
+|---|---|
+| `/api/missions/intent` | Format instructions in the prompt |
+| `/api/missions/intent?nativeOutput=true` | Provider-native JSON Schema |
 
-## References
+The local HTTP integration tests verify that native mode sends
+`response_format.type=json_schema`, `strict=true`, all four required properties
+and `additionalProperties=false`. Prompt mode includes schema instructions instead.
+The selected provider model must support native structured output; there is no silent
+fallback if it rejects the format.
 
-- [Spring AI ChatClient](https://docs.spring.io/spring-ai/reference/api/chatclient.html)
-- [Spring AI OpenAI Chat options](https://docs.spring.io/spring-ai/reference/api/chat/openai-chat.html)
-- [Spring MVC asynchronous requests](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-ann-async.html)
+## Untrusted output versus domain values
 
-API details were checked against the project's Spring AI 2.0.1 dependency.
+`agent.dto.MissionIntentOutput` models the provider response. Its schema permits
+explicit nulls for unknown drone IDs, sectors and mission types. This matters for
+native output: mandatory non-null values would conflict with instructions not to
+invent details when a command is incomplete.
+
+All fields must still be present. The service's strict parser rejects null values,
+then constructs the validated domain object:
+
+```java
+var output = result.getEntity();
+return new MissionIntent(
+        output.droneId(), output.type(), output.targetSector(), output.returnHome());
+```
+
+`MissionIntent` trims identifiers, normalizes their case with `Locale.ROOT` and
+checks their syntax. It requires a supported `MissionType`: `INSPECTION` or `PATROL`.
+Drone IDs use lowercase and sector IDs uppercase. Whether those identifiers exist
+will be checked against the simulator in a later milestone.
+
+The extraction instruction sets `returnHome=false` when no return is requested.
+A missing JSON boolean is nevertheless an output error; Java must not silently
+replace an omitted field with the primitive default.
+
+The other domain records establish small contracts for future work:
+
+- `MissionPlan`: intent and proposed steps; a proposal is not execution approval.
+- `MissionAssessment`: status and reasons, reserved for deterministic Java rules.
+- `MissionReport`: intent, outcome, summary and observations from execution.
+
+Their constructors validate required values and create immutable copies of lists.
+This milestone does not expose endpoints that ask the model to invent assessments
+or completed mission reports.
+
+## Validation and errors
+
+The dedicated JSON mapper rejects scalar coercion, unknown fields, missing fields,
+nulls, duplicate keys, numeric enums and trailing JSON values. Domain constructors
+reject blank or malformed identifiers. `InvalidMissionOutputException` deliberately
+contains no original parser exception or model content.
+
+The API returns:
+
+- 400 for invalid request input.
+- 502 with title `Invalid AI output` for rejected model output, including incomplete
+  mission details or abnormal generation completion.
+- The existing sanitized provider 502/503 responses for provider failures.
+
+Malformed output is not repaired through another model call. Spring AI also offers
+`validateSchema()` with a self-correcting retry loop; this milestone uses strict
+conversion and deterministic value validation instead. SDK transport retries remain
+configured independently.
+
+Schema compliance establishes structure, not truth. Tests cannot prove that a live
+model will identify the right drone or understand every ambiguous command. The
+prompt instructs it to mark unknown or ambiguous fields as null; Java rejects that
+output. A fabricated but well-formed identifier still requires later verification.
+
+## Verification
+
+Most checks use plain JUnit and Mockito with a real ChatClient and converter.
+They cover canonical intent extraction, literal user input, invalid JSON, coercion,
+missing fields, unknown enums, output truncation and provider error propagation.
+Domain tests verify normalization and immutable collection snapshots. MVC slice
+tests verify request validation and the 400/502/503 API boundary.
+
+The existing localhost provider fixture additionally checks both schema delivery
+modes over the real SDK, rejected output in both modes, sanitized logs and OpenAPI.
+It uses dummy credentials and disabled transport retries. No live model was called.
+
+For a manual comparison, send the README command once in each mode, then try an
+incomplete command such as `Inspect the area.`. Inspect semantic accuracy as well
+as the returned HTTP status. Live evaluation remains separate from automated tests.
+
+## Lessons
+
+A record alone is not sufficient validation. Required fields and strict conversion
+prevent missing booleans and coerced strings from becoming plausible domain data.
+Native schemas also need a way to represent missing information, while the domain
+can require complete values. Keeping provider output separate makes both contracts
+explicit. Generation metadata remains useful even when the answer parses correctly.
+
+References:
+
+- [Spring AI native structured output](https://docs.spring.io/spring-ai/reference/api/structured-output/native.html)
+- [Spring AI schema validation and self-correction](https://docs.spring.io/spring-ai/reference/api/structured-output/validation.html)
+
+Implementation checked against the project's Spring AI 2.0.1 and Jackson 3 dependencies.

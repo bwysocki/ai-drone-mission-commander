@@ -14,6 +14,8 @@ import org.springframework.web.bind.annotation.RestController;
 import pl.stalostech.ai_drone_mission_commander.agent.ChatService;
 import pl.stalostech.ai_drone_mission_commander.api.dto.ChatReply;
 import pl.stalostech.ai_drone_mission_commander.api.dto.ChatRequest;
+import pl.stalostech.ai_drone_mission_commander.api.mapper.ChatRequestMapper;
+import pl.stalostech.ai_drone_mission_commander.api.mapper.ChatResponseMapper;
 
 @RestController
 @RequestMapping("/api/chat")
@@ -40,8 +42,8 @@ public class ChatController {
     @Operation(summary = "Ask using ChatClient",
             description = "Send a question through the fluent ChatClient API. Returns the answer and token usage.")
     public ChatReply chat(@RequestBody ChatRequest request) {
-        ChatInput.validateMessage(request.message());
-        var options = ChatInput.options(request.options());
+        ChatRequestMapper.validateMessage(request.message());
+        var options = ChatRequestMapper.options(request.options());
         return ChatResponseMapper.toReply(options == null ? chatService.chat(request.message())
                 : chatService.chat(request.message(), options));
     }
@@ -50,8 +52,8 @@ public class ChatController {
     @Operation(summary = "Ask using ChatModel",
             description = "Call ChatModel directly with a Prompt. Uses the same instructions as /api/chat.")
     public ChatReply chatWithModel(@RequestBody ChatRequest request) {
-        ChatInput.validateMessage(request.message());
-        var options = ChatInput.options(request.options());
+        ChatRequestMapper.validateMessage(request.message());
+        var options = ChatRequestMapper.options(request.options());
         return ChatResponseMapper.toReply(options == null ? chatService.chatWithModel(request.message())
                 : chatService.chatWithModel(request.message(), options));
     }

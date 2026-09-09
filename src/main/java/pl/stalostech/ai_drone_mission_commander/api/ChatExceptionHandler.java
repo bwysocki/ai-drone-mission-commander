@@ -9,9 +9,18 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import pl.stalostech.ai_drone_mission_commander.agent.exception.InvalidMissionOutputException;
 
-@RestControllerAdvice(assignableTypes = ChatController.class)
+@RestControllerAdvice(assignableTypes = {ChatController.class, MissionIntentController.class})
 public class ChatExceptionHandler {
+
+    @ExceptionHandler(InvalidMissionOutputException.class)
+    public ProblemDetail handleInvalidMissionOutput() {
+        var problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_GATEWAY,
+                "The model did not return a valid mission intent. Provide a clear command with a drone, mission type and sector.");
+        problem.setTitle("Invalid AI output");
+        return problem;
+    }
 
     private static final Logger log = LoggerFactory.getLogger(ChatExceptionHandler.class);
 

@@ -1,4 +1,4 @@
-package pl.stalostech.ai_drone_mission_commander.api;
+package pl.stalostech.ai_drone_mission_commander.api.mapper;
 
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.metadata.ChatResponseMetadata;

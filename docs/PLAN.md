@@ -252,8 +252,8 @@ Understand how Spring AI controls model behavior and response delivery.
 * [x] Compare `.call()` and `.stream()`
 * [x] Inspect streaming response flow
 
-Implementation and experiments: [Milestone 2 notes](article-notes.md).
-Resource variants are tested without a live model; the notes provide a manual
+Implementation and experiments: [scenarios](scenarios.md).
+Resource variants are tested without a live model; the scenarios provide a manual
 comparison procedure for response quality. Streaming integration verifies that
 the first fragment arrives before the provider finishes.
 
@@ -295,11 +295,11 @@ Use the LLM as a typed component of the Java application.
 
 Create:
 
-* [ ] `MissionIntent`
-* [ ] `MissionPlan`
-* [ ] `MissionAssessment`
-* [ ] `MissionReport`
-* [ ] supporting enums
+* [x] `MissionIntent`
+* [x] `MissionPlan`
+* [x] `MissionAssessment`
+* [x] `MissionReport`
+* [x] supporting enums
 
 Example:
 
@@ -315,12 +315,18 @@ public record MissionIntent(
 
 ### Tasks
 
-* [ ] Convert natural language into `MissionIntent`
-* [ ] Use Spring AI structured output APIs
-* [ ] Validate structured output
-* [ ] Handle invalid model output
-* [ ] Experiment with schema-based output
-* [ ] Add tests
+* [x] Convert natural language into `MissionIntent`
+* [x] Use Spring AI structured output APIs
+* [x] Validate structured output
+* [x] Handle invalid model output
+* [x] Experiment with schema-based output
+* [x] Add tests
+
+Implemented as `POST /api/missions/intent`, with optional `nativeOutput=true`.
+Both schema delivery modes are verified against a local provider stub; live semantic
+accuracy remains a manual evaluation. Plans, assessments and reports are domain
+contracts for later milestones, not model-generated execution claims.
+See [Milestone 3 notes](article-notes.md) and [scenarios](scenarios.md).
 
 ### Example
 

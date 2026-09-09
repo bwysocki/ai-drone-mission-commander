@@ -34,8 +34,9 @@ Use the same question for all three endpoints:
    and a terminal `done`; concatenate text exactly, including whitespace.
 5. Disconnect curl during a response. Spring MVC cancels the upstream subscription
    when it detects the disconnection, typically on its next write.
-6. Compare the two instruction variants described in article-notes, restarting
-   after changing the prompt resource. Compare answer structure and missing facts.
+6. Append `Answer with a short numbered checklist.` to the prompt resource, then
+   compare with `Explain each preflight check and explicitly list missing information.`
+   Restart after each change and compare answer structure and missing facts.
 
 Automated coverage: strict option validation, unchanged defaults after overrides,
 resource-driven instructions, SSE event order, partial provider failure, no-content
@@ -47,6 +48,37 @@ Invalid query parameters return HTTP 400. Provider failures produce a sanitized 
 `error` event under HTTP 200 and no `done`, even after partial text. These checks use
 dummy credentials; live response quality and browser/proxy behavior require manual
 verification. Prompt instructions do not validate or execute a drone mission.
+
+# Milestone 3 — Extract a typed mission intent
+
+Send this body to `POST /api/missions/intent`:
+
+```json
+{"message":"Send Alpha to Bravo, inspect the area and return home."}
+```
+
+Expected:
+
+```json
+{"droneId":"alpha","type":"INSPECTION","targetSector":"BRAVO","returnHome":true}
+```
+
+Repeat with `?nativeOutput=true` using a model that supports native structured output.
+The domain result should be equivalent. Try `Have Alpha patrol Bravo.` to compare
+`PATROL` and `returnHome=false`. No mission is executed and no safety assessment is made.
+
+For an incomplete command such as `Inspect the area.`, the extraction instructions
+require nulls for unknown identifiers. Java rejects that output with HTTP 502 and
+title `Invalid AI output`. This is a manual semantic check: a schema alone cannot
+prevent fabricated identifiers. Drone and sector existence checks belong to the
+future simulator integration.
+
+Automated coverage uses fixed provider responses to verify both wire formats, typed
+conversion, invalid JSON, missing and extra fields, nulls, duplicate keys, wrong value
+types, unsupported mission types and abnormal finish reasons. Only a complete valid
+intent reaches the API. MVC tests verify invalid user input returns 400, invalid model
+output returns 502 and provider transport errors return 503. Error responses and logs
+do not reveal rejected model content. Tests require no real credentials or model calls.
 
 The following scenarios are planned for later milestones.
 

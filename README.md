@@ -239,5 +239,67 @@ with `SPRING_MVC_ASYNC_REQUEST_TIMEOUT`. A broken connection or timeout may end
 without a terminal SSE event. Proxies can buffer SSE; disable their buffering if needed.
 
 Swagger UI documents the streaming endpoint, but `curl -N` is the simplest way to
-observe incremental arrival. See [Milestone 2 notes](docs/article-notes.md) and
-[scenarios](docs/scenarios.md) for the implementation and prompt experiment.
+observe incremental arrival. See [scenarios](docs/scenarios.md) for the prompt
+experiment and streaming checks.
+
+## Structured mission intent (Milestone 3)
+
+`POST /api/missions/intent` converts a single natural-language command into a typed
+`MissionIntent`. It uses a dedicated extraction prompt and the configured chat model.
+Try it under **Missions** in Swagger UI, or run:
+
+```bash
+curl --fail-with-body http://localhost:8080/api/missions/intent \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Send Alpha to Bravo, inspect the area and return home."}'
+```
+
+Expected response for that command:
+
+```json
+{
+  "droneId": "alpha",
+  "type": "INSPECTION",
+  "targetSector": "BRAVO",
+  "returnHome": true
+}
+```
+
+Supported mission types are `INSPECTION` and `PATROL`. Identifiers contain letters,
+digits, underscores or hyphens and start with a letter or digit. Java trims them,
+lowercases the drone ID and uppercases the sector. This checks identifier format;
+it does not confirm that a drone or sector exists. `returnHome` is false unless
+returning home is requested.
+
+The default mode includes the generated schema in the prompt. To compare it with
+provider-native JSON Schema, send the same body to:
+
+```text
+POST /api/missions/intent?nativeOutput=true
+```
+
+Native mode requires a model supporting structured output. Both modes use Spring
+AI's `BeanOutputConverter` and `ChatClient.responseEntity(...)`. The provider DTO
+allows explicit nulls for unknown mission details, while Java rejects incomplete
+output before creating a domain intent. This avoids asking a strict-schema model
+to invent mandatory identifiers. Format instructions do not guarantee semantic
+accuracy: inspect the extracted intent before using it in subsequent workflows.
+
+Request validation returns 400 for missing/blank/non-string messages or an invalid
+mode parameter. Rejected output returns a sanitized 502 (`Invalid AI output`):
+malformed JSON, missing or extra fields, duplicate keys, wrong value types, unknown
+mission types, invalid identifiers, nulls, or generation ending without `STOP`.
+Missing or ambiguous mission details can also result in 502; provide a more explicit
+command. Provider failures keep the existing 502/503 classification. Raw model text
+and parser error messages are not included in the error response.
+
+There is no automatic model-output repair loop. Each extraction makes one logical
+model call; the SDK's configured transport retries still apply. The new tests use
+mocks and a localhost provider with dummy credentials, never a real OpenAI account.
+
+`MissionPlan`, `MissionAssessment`, `MissionReport` and their enums are immutable
+contracts prepared for later milestones. This endpoint only extracts intent. It
+does not generate safety decisions, inspect telemetry, create execution reports
+or execute missions.
+
+See [Milestone 3 notes](docs/article-notes.md) for code examples and validation details.

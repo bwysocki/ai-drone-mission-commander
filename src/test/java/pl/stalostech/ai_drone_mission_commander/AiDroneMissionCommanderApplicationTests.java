@@ -155,7 +155,7 @@ class AiDroneMissionCommanderApplicationTests {
                 .andExpect(jsonPath("$.components.schemas.ChatRequest.properties.message.type").value("string"))
                 .andReturn();
         JsonNode spec = objectMapper.readTree(result.getResponse().getContentAsString());
-        assertThat(spec.path("paths").size()).isEqualTo(3);
+        assertThat(spec.path("paths").size()).isEqualTo(4);
         JsonNode streaming = spec.path("paths").path("/api/chat/stream").path("get");
         assertThat(streaming.at("/responses/200/content/text~1event-stream").isMissingNode()).isFalse();
         assertThat(streaming.path("parameters").size()).isEqualTo(3);
@@ -308,6 +308,72 @@ class AiDroneMissionCommanderApplicationTests {
                 .contains("event:delta", "event:error", "\"status\":502")
                 .doesNotContain("event:done");
         assertThat(REQUESTS).hasSize(1);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void extractsIntentAndSendsSchemaInTheSelectedMode(boolean nativeOutput) throws Exception {
+        missionResponse("""
+                {"droneId":"Alpha","type":"INSPECTION","targetSector":"Bravo","returnHome":true}
+                """);
+        mvc.perform(post("/api/missions/intent").param("nativeOutput", String.valueOf(nativeOutput))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"message\":\"Send Alpha to Bravo, inspect the area and return home.\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.droneId").value("alpha"))
+                .andExpect(jsonPath("$.type").value("INSPECTION"))
+                .andExpect(jsonPath("$.targetSector").value("BRAVO"))
+                .andExpect(jsonPath("$.returnHome").value(true));
+        var sent = REQUESTS.poll(1, TimeUnit.SECONDS);
+        assertThat(sent).isNotNull();
+        var body = objectMapper.readTree(sent.body());
+        assertThat(body.path("model").asText()).isEqualTo("test-model");
+        if (nativeOutput) {
+            assertThat(body.at("/response_format/type").asText()).isEqualTo("json_schema");
+            assertThat(body.at("/response_format/json_schema/strict").asBoolean()).isTrue();
+            var schema = body.at("/response_format/json_schema/schema");
+            assertThat(schema.path("properties").size()).isEqualTo(4);
+            assertThat(schema.path("required").size()).isEqualTo(4);
+            assertThat(schema.path("additionalProperties").asBoolean()).isFalse();
+            for (String field : new String[]{"droneId", "type", "targetSector"}) {
+                assertThat(schema.path("properties").path(field).toString()).contains("null");
+            }
+        } else {
+            assertThat(body.path("response_format").isMissingNode()).isTrue();
+            assertThat(body.path("messages").toString()).contains("returnHome", "INSPECTION", "properties");
+        }
+        assertThat(REQUESTS).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    @org.junit.jupiter.api.extension.ExtendWith(org.springframework.boot.test.system.OutputCaptureExtension.class)
+    void rejectsInvalidIntentWithoutLeakingModelText(boolean nativeOutput,
+            org.springframework.boot.test.system.CapturedOutput output) throws Exception {
+        missionResponse("{\"droneId\":\"sensitive-model-output\",\"type\":\"UNSUPPORTED\"}");
+        var result = mvc.perform(post("/api/missions/intent").param("nativeOutput", String.valueOf(nativeOutput))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"message\":\"Inspect Bravo\"}"))
+                .andExpect(status().isBadGateway())
+                .andExpect(jsonPath("$.title").value("Invalid AI output")).andReturn();
+        assertThat(result.getResponse().getContentAsString()).doesNotContain("sensitive-model-output", "UNSUPPORTED");
+        assertThat(output.getAll()).doesNotContain("sensitive-model-output");
+        assertThat(REQUESTS).hasSize(1);
+    }
+
+    @Test
+    void documentsIntentExtractionWithoutCallingProvider() throws Exception {
+        var result = mvc.perform(get("/v3/api-docs")).andExpect(status().isOk()).andReturn();
+        var spec = objectMapper.readTree(result.getResponse().getContentAsString());
+        var operation = spec.path("paths").path("/api/missions/intent").path("post");
+        assertThat(operation.at("/responses/200/content/application~1json/schema/$ref").asText())
+                .isEqualTo("#/components/schemas/MissionIntent");
+        assertThat(operation.path("parameters").get(0).path("name").asText()).isEqualTo("nativeOutput");
+        assertThat(REQUESTS).isEmpty();
+    }
+
+    private void missionResponse(String content) throws Exception {
+        var body = objectMapper.readTree(PROVIDER_RESPONSE);
+        ((tools.jackson.databind.node.ObjectNode) body.at("/choices/0/message")).put("content", content);
+        RESPONSE.set(objectMapper.writeValueAsString(body));
     }
 
     private static HttpServer startProvider() {

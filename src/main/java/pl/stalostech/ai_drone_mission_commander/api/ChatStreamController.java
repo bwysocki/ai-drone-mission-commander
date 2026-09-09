@@ -21,9 +21,10 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 import pl.stalostech.ai_drone_mission_commander.agent.ChatService;
-import pl.stalostech.ai_drone_mission_commander.agent.IncompleteChatStreamException;
+import pl.stalostech.ai_drone_mission_commander.agent.exception.IncompleteChatStreamException;
 import pl.stalostech.ai_drone_mission_commander.api.dto.ChatRequestOptions;
 import pl.stalostech.ai_drone_mission_commander.api.dto.ChatStreamEvent;
+import pl.stalostech.ai_drone_mission_commander.api.mapper.ChatRequestMapper;
 import reactor.core.publisher.Flux;
 
 @RestController
@@ -51,8 +52,8 @@ public class ChatStreamController {
             @RequestParam String message,
             @RequestParam(required = false) String model,
             @RequestParam(required = false) Integer maxCompletionTokens) {
-        ChatInput.validateMessage(message);
-        var options = ChatInput.options(new ChatRequestOptions(model, maxCompletionTokens));
+        ChatRequestMapper.validateMessage(message);
+        var options = ChatRequestMapper.options(new ChatRequestOptions(model, maxCompletionTokens));
         return Flux.defer(() -> {
             var hasText = new AtomicBoolean();
             return service.stream(message, options)
