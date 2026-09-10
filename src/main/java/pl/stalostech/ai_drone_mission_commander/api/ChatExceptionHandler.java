@@ -10,9 +10,18 @@ import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import pl.stalostech.ai_drone_mission_commander.agent.exception.InvalidMissionOutputException;
+import pl.stalostech.ai_drone_mission_commander.agent.exception.AgentToolException;
 
-@RestControllerAdvice(assignableTypes = {ChatController.class, MissionIntentController.class})
+@RestControllerAdvice(assignableTypes = {ChatController.class, MissionIntentController.class, WorldAgentController.class})
 public class ChatExceptionHandler {
+
+    @ExceptionHandler(AgentToolException.class)
+    public ProblemDetail handleAgentToolError() {
+        var problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_GATEWAY,
+                "The agent could not complete its tool requests. Please try a clearer question.");
+        problem.setTitle("Agent tool error");
+        return problem;
+    }
 
     @ExceptionHandler(InvalidMissionOutputException.class)
     public ProblemDetail handleInvalidMissionOutput() {

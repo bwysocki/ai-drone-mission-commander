@@ -478,13 +478,13 @@ Give the LLM access to the simulated world.
 
 Create:
 
-* [ ] `getDroneStatus`
-* [ ] `getFleetStatus`
-* [ ] `getWeather`
-* [ ] `getSector`
-* [ ] `calculateRoute`
-* [ ] `getMission`
-* [ ] `getRecentAlerts`
+* [x] `getDroneStatus`
+* [x] `getFleetStatus`
+* [x] `getWeather`
+* [x] `getSector`
+* [x] `calculateRoute`
+* [x] `getMission`
+* [x] `getRecentAlerts`
 
 Example:
 
@@ -497,22 +497,22 @@ DroneStatus getDroneStatus(String droneId) {
 
 ### Tasks
 
-* [ ] Create `DroneTools`
-* [ ] Create `WeatherTools`
-* [ ] Create `MissionTools`
-* [ ] Register tools with the agent
-* [ ] Inspect generated tool definitions
-* [ ] Inspect tool call arguments
-* [ ] Inspect tool results
-* [ ] Handle tool failures
-* [ ] Add integration tests
+* [x] Create `DroneTools`
+* [x] Create `WeatherTools`
+* [x] Create `MissionTools`
+* [x] Register tools with the agent
+* [x] Inspect generated tool definitions
+* [x] Inspect tool call arguments
+* [x] Inspect tool results
+* [x] Handle tool failures
+* [x] Add integration tests
 
 ### Example Scenario
 
 User:
 
 ```text
-Can Alpha inspect sector Bravo?
+Can Alpha inspect SECTOR_B and return home?
 ```
 
 Expected agent behavior:
@@ -522,7 +522,7 @@ getDroneStatus("alpha")
     ↓
 getWeather()
     ↓
-getSector("BRAVO")
+getSector("SECTOR_B")
     ↓
 calculateRoute(...)
     ↓

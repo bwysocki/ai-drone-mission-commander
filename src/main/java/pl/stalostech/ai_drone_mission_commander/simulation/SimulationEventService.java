@@ -1,12 +1,22 @@
 package pl.stalostech.ai_drone_mission_commander.simulation;
 
+import java.util.List;
 import org.springframework.stereotype.Service;
 import pl.stalostech.ai_drone_mission_commander.domain.*;
 
 @Service
 public class SimulationEventService {
+    public static final int MIN_RECENT_LIMIT = 1;
+    public static final int MAX_RECENT_LIMIT = 20;
     private final DroneWorld world;
     public SimulationEventService(DroneWorld world) { this.world = world; }
+
+    public List<SimulationEvent> recent(int limit) {
+        if (limit < MIN_RECENT_LIMIT || limit > MAX_RECENT_LIMIT) {
+            throw new IllegalArgumentException("Alert limit must be between 1 and 20");
+        }
+        return world.snapshot().events().reversed().stream().limit(limit).toList();
+    }
 
     public SimulationEvent inject(SimulationEventType type, String droneId, Integer amount) {
         if (type == null) throw new IllegalArgumentException("Event type is required");

@@ -38,11 +38,14 @@ class SimulationControllerTest {
         assertThat(context.getBeansOfType(ChatModel.class)).isEmpty();
         assertThat(context.getBeansOfType(ChatService.class)).isEmpty();
         assertThat(context.getBeansOfType(MissionIntentService.class)).isEmpty();
+        assertThat(context.getBeansOfType(pl.stalostech.ai_drone_mission_commander.agent.WorldAgentService.class)).isEmpty();
         var result = mvc.perform(get("/v3/api-docs")).andExpect(status().isOk()).andReturn();
         var paths = mapper.readTree(result.getResponse().getContentAsString()).path("paths");
         assertThat(paths.has("/api/simulation/missions")).isTrue();
         assertThat(paths.has("/api/simulation/events")).isTrue();
         assertThat(paths.has("/api/chat")).isFalse();
+        assertThat(paths.has("/api/agent/chat")).isFalse();
+        assertThat(paths.has("/api/agent/tools")).isFalse();
         mvc.perform(get("/swagger-ui/index.html")).andExpect(status().isOk());
     }
 

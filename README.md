@@ -429,3 +429,47 @@ such as battery reserves, weather limits and authorization belong to the later
 `MissionSafetyValidator` milestone. The simulator does not operate real hardware.
 
 See [Milestone 4 notes](docs/article-notes.md) and [scenarios](docs/scenarios.md).
+
+## Milestone 5: ask the agent about the simulated world
+
+Start the application with the standard profile and a configured OpenAI key.
+Use **World agent** in [Swagger UI](http://localhost:8080/swagger-ui/index.html),
+or send a request:
+
+```bash
+curl http://localhost:8080/api/agent/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Can Alpha inspect SECTOR_B and return home? Check its current status, weather and route first."}'
+```
+
+This endpoint accepts the same optional `options` object as `/api/chat` and returns
+the same `message` and `metadata` structure. The model can call seven read-only tools:
+`getDroneStatus`, `getFleetStatus`, `getWeather`, `getSector`, `calculateRoute`,
+`getMission` and `getRecentAlerts`. Inspect their generated descriptions and JSON
+input schemas without a model call:
+
+```bash
+curl http://localhost:8080/api/agent/tools
+```
+
+Tool arguments are validated against those schemas before invoking Java methods.
+Unknown objects and invalid arguments produce sanitized tool results that the model
+can explain or correct. Unrecoverable tool orchestration failures return HTTP 502;
+provider failures retain the existing HTTP 502/503 handling.
+
+Change the world through the Simulation API, then ask again to read the new state.
+Each request is independent: no conversation memory is implemented yet.
+Route estimates cover movement only; an inspection consumes 3 additional battery
+points and a patrol 2. Recent alerts are event history, newest first, with a required
+`limit` from 1 to 20. They are not a list of currently active faults.
+
+The agent cannot create or execute missions, move drones or inject events. Its answer
+is advice, not safety approval. Tools read the current state individually, so a quote
+can become stale if the world changes. A request may make multiple provider calls
+while Spring AI executes selected tools and sends their results back to the model.
+Response ID, model and finish reason describe the final response; Spring AI accumulates
+reported token usage across the tool-calling turns.
+
+The `simulator` profile keeps these AI endpoints disabled. Automated tests use
+in-memory services and a small local provider stub with dummy credentials; they do
+not call a real model.

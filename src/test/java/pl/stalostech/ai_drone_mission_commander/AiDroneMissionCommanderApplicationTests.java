@@ -15,6 +15,7 @@ import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.ai.chat.client.ChatClient;
@@ -22,6 +23,8 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.ApplicationContext;
 import org.springframework.http.MediaType;
@@ -69,6 +72,7 @@ class AiDroneMissionCommanderApplicationTests {
             """;
     private static final BlockingQueue<RecordedRequest> REQUESTS = new LinkedBlockingQueue<>();
     private static final AtomicReference<String> RESPONSE = new AtomicReference<>(PROVIDER_RESPONSE);
+    private static final AtomicReference<String> TOOL_RESPONSE = new AtomicReference<>();
     private static final AtomicInteger PROVIDER_STATUS = new AtomicInteger(200);
     private static final AtomicBoolean STREAM_RESPONSE = new AtomicBoolean();
     private static final AtomicReference<String> STREAM_BODY = new AtomicReference<>();
@@ -106,6 +110,7 @@ class AiDroneMissionCommanderApplicationTests {
     void resetProvider() {
         REQUESTS.clear();
         RESPONSE.set(PROVIDER_RESPONSE);
+        TOOL_RESPONSE.set(null);
         PROVIDER_STATUS.set(200);
         STREAM_RESPONSE.set(false);
         STREAM_BODY.set(null);
@@ -155,7 +160,7 @@ class AiDroneMissionCommanderApplicationTests {
                 .andExpect(jsonPath("$.components.schemas.ChatRequest.properties.message.type").value("string"))
                 .andReturn();
         JsonNode spec = objectMapper.readTree(result.getResponse().getContentAsString());
-        assertThat(spec.path("paths").size()).isEqualTo(18);
+        assertThat(spec.path("paths").size()).isEqualTo(20);
         JsonNode streaming = spec.path("paths").path("/api/chat/stream").path("get");
         assertThat(streaming.at("/responses/200/content/text~1event-stream").isMissingNode()).isFalse();
         assertThat(streaming.path("parameters").size()).isEqualTo(3);
@@ -376,6 +381,117 @@ class AiDroneMissionCommanderApplicationTests {
         RESPONSE.set(objectMapper.writeValueAsString(body));
     }
 
+    @Test
+    void agentUsesLiveToolResultsThroughTheRealOpenAiClient() throws Exception {
+        var world = context.getBean(pl.stalostech.ai_drone_mission_commander.simulation.DroneWorld.class);
+        world.reset();
+        context.getBean(pl.stalostech.ai_drone_mission_commander.simulation.SimulationEventService.class)
+                .inject(pl.stalostech.ai_drone_mission_commander.domain.SimulationEventType.BATTERY_DROP, "alpha", 20);
+        var before = world.snapshot();
+        var calls = objectMapper.createArrayNode();
+        addToolCall(calls, "getDroneStatus", "{\"droneId\":\"alpha\"}");
+        addToolCall(calls, "getWeather", "{}");
+        addToolCall(calls, "getSector", "{\"sectorId\":\"SECTOR_B\"}");
+        addToolCall(calls, "calculateRoute", "{\"droneId\":\"alpha\",\"sectorId\":\"SECTOR_B\",\"returnHome\":true}");
+        setToolResponse(calls);
+        mvc.perform(post("/api/agent/chat").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"message\":\"Can Alpha inspect SECTOR_B and return home?\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.message").value(ANSWER))
+                .andExpect(jsonPath("$.metadata.totalTokens").value(64));
+        var first = objectMapper.readTree(REQUESTS.poll(2, TimeUnit.SECONDS).body());
+        assertThat(first.path("tools").size()).isEqualTo(7);
+        var second = objectMapper.readTree(REQUESTS.poll(2, TimeUnit.SECONDS).body());
+        var results = new java.util.ArrayList<JsonNode>();
+        second.path("messages").forEach(message -> {
+            if (message.path("role").asText().equals("tool")) {
+                results.add(objectMapper.readTree(message.path("content").asText()));
+            }
+        });
+        assertThat(results).hasSize(4);
+        assertThat(results.get(0).path("batteryPercent").asInt()).isEqualTo(62);
+        assertThat(results.get(1).path("windKmh").asInt()).isEqualTo(12);
+        assertThat(results.get(2).path("id").asText()).isEqualTo("SECTOR_B");
+        assertThat(results.get(3).path("estimatedBatteryUsage").asInt()).isEqualTo(20);
+        assertThat(world.snapshot()).isEqualTo(before);
+        assertThat(REQUESTS).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"{\"droneId\":\"missing-drone\"}", "{invalid"})
+    void agentFeedsSanitizedToolFailuresBackToTheModel(String arguments) throws Exception {
+        var calls = objectMapper.createArrayNode();
+        addToolCall(calls, "getDroneStatus", arguments);
+        setToolResponse(calls);
+        mvc.perform(post("/api/agent/chat").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"message\":\"Check this drone\"}")).andExpect(status().isOk());
+        REQUESTS.poll(2, TimeUnit.SECONDS);
+        var second = objectMapper.readTree(REQUESTS.poll(2, TimeUnit.SECONDS).body());
+        var toolMessage = java.util.stream.StreamSupport.stream(second.path("messages").spliterator(), false)
+                .filter(message -> message.path("role").asText().equals("tool")).findFirst().orElseThrow();
+        assertThat(toolMessage.path("content").asText())
+                .contains(arguments.startsWith("{invalid") ? "INVALID_ARGUMENTS" : "NOT_FOUND")
+                .doesNotContain("missing-drone", "Exception", "{invalid");
+    }
+
+    @Test
+    void agentCannotResolveAnExecutionTool() throws Exception {
+        var world = context.getBean(pl.stalostech.ai_drone_mission_commander.simulation.DroneWorld.class);
+        var before = world.snapshot();
+        var calls = objectMapper.createArrayNode();
+        addToolCall(calls, "executeMission", "{\"missionId\":\"mission-1\"}");
+        setToolResponse(calls);
+        mvc.perform(post("/api/agent/chat").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"message\":\"Execute a mission\"}"))
+                .andExpect(status().isBadGateway()).andExpect(jsonPath("$.title").value("Agent tool error"));
+        assertThat(world.snapshot()).isEqualTo(before);
+        assertThat(REQUESTS).hasSize(1);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"private-tool-name-marker", "unknown-tool\nFORGED_LOG_MARKER"})
+    @ExtendWith(OutputCaptureExtension.class)
+    void unknownToolNamesNeverAppearInLogsOrPublicErrors(String toolName, CapturedOutput output) throws Exception {
+        var calls = objectMapper.createArrayNode();
+        addToolCall(calls, toolName, "{}");
+        setToolResponse(calls);
+        var result = mvc.perform(post("/api/agent/chat").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"message\":\"Read the simulated world\"}"))
+                .andExpect(status().isBadGateway())
+                .andExpect(jsonPath("$.title").value("Agent tool error"))
+                .andReturn();
+        assertThat(output.getAll())
+                .contains("Agent tool failure: code=TOOL_ORCHESTRATION_FAILED")
+                .doesNotContain(toolName, "private-tool-name-marker", "FORGED_LOG_MARKER",
+                        "LLM may have adapted", "IllegalStateException");
+        assertThat(result.getResponse().getContentAsString())
+                .doesNotContain("private-tool-name-marker", "FORGED_LOG_MARKER", "IllegalStateException");
+        assertThat(REQUESTS).hasSize(1);
+    }
+
+    @Test
+    void exposesToolDefinitionsWithoutCallingProviderAndValidatesChatInput() throws Exception {
+        mvc.perform(get("/api/agent/tools")).andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(7));
+        mvc.perform(post("/api/agent/chat").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"message\":\" \"}")).andExpect(status().isBadRequest());
+        assertThat(REQUESTS).isEmpty();
+    }
+
+    private void addToolCall(tools.jackson.databind.node.ArrayNode calls, String name, String arguments) {
+        var call = calls.addObject();
+        call.put("id", "call-" + calls.size()).put("type", "function");
+        call.putObject("function").put("name", name).put("arguments", arguments);
+    }
+
+    private void setToolResponse(tools.jackson.databind.node.ArrayNode calls) {
+        var response = objectMapper.readTree(PROVIDER_RESPONSE);
+        var choice = (tools.jackson.databind.node.ObjectNode) response.path("choices").get(0);
+        choice.put("finish_reason", "tool_calls");
+        var message = (tools.jackson.databind.node.ObjectNode) choice.path("message");
+        message.putNull("content");
+        message.set("tool_calls", calls);
+        TOOL_RESPONSE.set(objectMapper.writeValueAsString(response));
+    }
+
     private static HttpServer startProvider() {
         try {
             HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -409,7 +525,8 @@ class AiDroneMissionCommanderApplicationTests {
                         exchange.getResponseBody().write((streamChunk("battery.") + streamFinish()).getBytes(StandardCharsets.UTF_8));
                         return;
                     }
-                    byte[] body = RESPONSE.get().getBytes(StandardCharsets.UTF_8);
+                    String toolResponse = TOOL_RESPONSE.getAndSet(null);
+                    byte[] body = (toolResponse == null ? RESPONSE.get() : toolResponse).getBytes(StandardCharsets.UTF_8);
                     exchange.getResponseHeaders().set("Content-Type", "application/json");
                     exchange.sendResponseHeaders(PROVIDER_STATUS.get(), body.length);
                     exchange.getResponseBody().write(body);

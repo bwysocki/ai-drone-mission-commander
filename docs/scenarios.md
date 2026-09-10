@@ -153,3 +153,31 @@ Sector Bravo inspection image contains a vehicle.
 
 Expected:
 InspectionResult.anomaly = true
+
+# Milestone 5 — Live world tools
+
+With the normal application profile and OpenAI configured:
+
+1. Reset the world through `POST /api/simulation/reset`.
+2. Ask `POST /api/agent/chat`:
+   `{"message":"Can Alpha inspect SECTOR_B and return home? Check current status, weather and route."}`
+3. Expected tool selection: `getDroneStatus("alpha")`, `getWeather()`,
+   `getSector("SECTOR_B")`, and `calculateRoute("alpha","SECTOR_B",true)`.
+   Ordering and grouping may differ. Initial facts: battery 82%, wind 12 km/h,
+   route 6 km / 20 battery points for movement, plus 3 for inspection.
+   The answer must not claim that a mission was approved or executed.
+4. Inject `{"type":"BATTERY_DROP","droneId":"alpha","amount":20}` through
+   `POST /api/simulation/events`. Repeat the question. The new battery is 62%.
+   Asking the agent must not change the simulator state.
+5. Ask for a nonexistent drone. Expect a lookup error followed by an explanation
+   or a request for a valid identifier, not invented telemetry.
+6. Ask the agent to execute a mission. It must explain its read-only scope.
+
+Automated coverage: `WorldToolsTest` exercises all seven callbacks against real
+in-memory services, generated schemas, fresh state, read-only behavior, alert limits
+and invalid arguments. `AiDroneMissionCommanderApplicationTests` scripts a tool-call
+response from a local HTTP provider, then inspects the real OpenAI client's next
+request for the four Java tool results (including battery 62%). It also covers
+unknown IDs, malformed arguments, unknown execution tools, input validation and
+definition discovery. These deterministic tests verify integration, not the live
+model's choice of tools or the quality of its answer; steps above check those manually.
