@@ -7,7 +7,8 @@ mission planning in a simulated drone environment.
 
 - JDK 25 (`java -version` should report this version).
 - Internet access for the initial build to download Maven and dependencies.
-- An OpenAI API key for a standard application startup.
+- An OpenAI API key for a standard application startup. The `simulator` profile
+  runs the simulation and Swagger UI without a key.
 
 The project includes Maven Wrapper, so a separate Maven installation is not required.
 Run the following commands from the project root (Linux/macOS).
@@ -135,7 +136,8 @@ The response includes `status`, `title` (`AI provider error`) and a generic `det
 It does not expose the provider's raw error message or credentials. The SDK may retry
 transient failures before the application returns the error.
 
-The application answers questions; it does not execute or validate drone missions yet.
+The AI endpoints answer questions and extract intent. Simulated execution is exposed
+separately through the Simulation endpoints described below.
 
 ### Diagnosing provider errors
 
@@ -302,4 +304,128 @@ contracts prepared for later milestones. This endpoint only extracts intent. It
 does not generate safety decisions, inspect telemetry, create execution reports
 or execute missions.
 
-See [Milestone 3 notes](docs/article-notes.md) for code examples and validation details.
+See [scenarios](docs/scenarios.md) for structured extraction examples and checks.
+
+## Drone World Simulator (Milestone 4)
+
+Run the simulator without an OpenAI key:
+
+```bash
+./mvnw spring-boot:run -Dspring-boot.run.profiles=simulator
+```
+
+Open [Swagger UI](http://localhost:8080/swagger-ui/index.html) and use the
+**Simulation** group. This profile disables AI services and their endpoints.
+A normal startup with an API key exposes both Simulation and AI endpoints; the AI
+endpoints are not connected to mission execution yet.
+
+The world lives in memory. Restarting the application or calling
+`POST /api/simulation/reset` restores these fixtures and clears missions and events:
+
+| Drone | Battery | Position | State |
+|---|---:|---|---|
+| alpha | 82% | BASE `(0,0)` | READY |
+| bravo | 41% | SECTOR_A `(2,0)` | IDLE |
+| charlie | 67% | BASE `(0,0)` | READY |
+
+Coordinates are kilometres on a flat map. The sectors are `SECTOR_A (2,0)`,
+`SECTOR_B (0,3)` and `SECTOR_C (4,3)`. Weather starts at 12 km/h wind, no rain
+and GOOD visibility. IDs are case-insensitive on simulation lookups. `BRAVO`, used
+in earlier extraction examples, is not a sector alias: use `SECTOR_B` in commands
+intended for this world.
+
+### Inspect the world and quote a route
+
+```bash
+curl http://localhost:8080/api/simulation/world
+curl 'http://localhost:8080/api/simulation/routes?droneId=alpha&sectorId=SECTOR_B&returnHome=true'
+```
+
+Individual reads are available at `/drones`, `/drones/{id}`, `/weather`, `/sectors`,
+`/sectors/{id}`, `/missions` and `/missions/{id}`, all under `/api/simulation`.
+
+Routes use straight lines. For each leg, battery consumption in percentage points is:
+
+```text
+ceil(distanceKm × 2 × (1 + windKmh / 20))
+```
+
+The route quote sums costs rounded separately for each leg. It includes movement
+only; an inspection adds 3 points and a patrol adds 2. Rain and visibility are
+reported but do not affect this simplified energy model.
+
+### Create and execute a mission
+
+```bash
+curl http://localhost:8080/api/simulation/missions \
+  -H 'Content-Type: application/json' \
+  -d '{"droneId":"alpha","type":"INSPECTION","targetSector":"SECTOR_B","returnHome":true}'
+
+curl -X POST http://localhost:8080/api/simulation/missions/mission-1/execute
+curl http://localhost:8080/api/simulation/drones/alpha
+```
+
+Replace `mission-1` in the example with the ID returned by creation. The mission
+counter continues across resets within a running application, so old mission IDs
+return 404 rather than referring to newly created missions. Restarting the application
+starts a fresh in-memory world.
+Creation returns a `CREATED` mission and does not move or reserve a drone. Execution
+recalculates the route using the current position and weather, then checks hardware
+availability and the complete energy budget, including activity and return.
+
+For Alpha inspecting SECTOR_B and returning home in the initial world, movement
+costs 20 points and inspection costs 3. The final battery is **59%**, position BASE,
+state READY. Without returnHome, the drone stays at the target in IDLE state.
+
+A completed inspection of SECTOR_C reports a fixed simulated vehicle anomaly;
+SECTOR_A and SECTOR_B have no anomalies. Patrol missions do not create inspection
+results. These observations are fixtures, not image analysis.
+
+Execution is synchronous and atomic. It returns HTTP 200 with mission state
+`COMPLETED` or `FAILED`; inspect the state rather than just the HTTP status. A failed
+precondition leaves the drone unchanged. Re-executing a completed or failed mission
+returns 409, without charging the battery again. Create a new mission to retry.
+`RUNNING` and `IN_MISSION` are internal transition states, not polling phases in this
+instantaneous simulator. Concurrent events are applied before or after execution,
+not halfway through a flight.
+
+### Inject an event or move a drone directly
+
+```bash
+curl http://localhost:8080/api/simulation/events \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"BATTERY_DROP","droneId":"alpha","amount":60}'
+
+curl http://localhost:8080/api/simulation/events \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"STRONG_WIND","amount":45}'
+
+curl -X POST 'http://localhost:8080/api/simulation/drones/charlie/move?sectorId=SECTOR_A'
+curl -X POST http://localhost:8080/api/simulation/drones/charlie/return-home
+```
+
+| Event | Scope | Effect |
+|---|---|---|
+| BATTERY_DROP | Required droneId | Subtract amount (1–100, default 20), clamped at zero |
+| GPS_DEGRADED | Required droneId | Mark degraded GPS; does not repair LOST GPS |
+| GPS_LOST | Required droneId | Prevent movement and mission execution |
+| STRONG_WIND | World; omit droneId | Set wind (30–200 km/h, default 45), increasing flight costs |
+| MOTOR_WARNING | Required droneId | Prevent movement and mission execution |
+| COMMUNICATION_LOST | Required droneId | Prevent movement and mission execution |
+
+Omit `amount` for events other than battery and wind. Event history is included in
+`/world`; sequence numbers replace timestamps so replay is deterministic. Battery
+events record the actual number of points removed. A reset clears faults and history.
+
+Invalid input returns 400, unknown objects 404, and blocked direct movement or
+invalid mission transitions 409. JSON enums must be strings, booleans must be JSON
+booleans, and duplicate or unknown JSON fields are rejected. For example, a misspelled
+`ammount` returns 400 instead of silently applying the default battery drop.
+Domain status READY means idle at
+BASE; inspect battery and fault flags before assuming a drone can operate.
+
+The technical checks here prevent impossible simulator operations. Mission policies
+such as battery reserves, weather limits and authorization belong to the later
+`MissionSafetyValidator` milestone. The simulator does not operate real hardware.
+
+See [Milestone 4 notes](docs/article-notes.md) and [scenarios](docs/scenarios.md).

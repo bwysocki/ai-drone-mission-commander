@@ -7,9 +7,9 @@ import org.springframework.context.annotation.Configuration;
 @Configuration(proxyBeanMethods = false)
 @OpenAPIDefinition(info = @Info(
         title = "Drone Mission AI",
-        version = "Milestone 3",
+        version = "Milestone 4",
         description = "Ask drone operation questions, override model options and compare complete answers with SSE streaming. "
-                + "The application provides advice; it does not execute drone missions yet. "
-                + "Configure the OpenAI API key on the server before sending chat requests."))
+                + "The Simulation endpoints execute deterministic missions in memory. AI endpoints only provide advice and extract intent. "
+                + "Use the simulator profile without an API key, or configure OpenAI to enable the AI endpoints."))
 public class OpenApiConfiguration {
 }

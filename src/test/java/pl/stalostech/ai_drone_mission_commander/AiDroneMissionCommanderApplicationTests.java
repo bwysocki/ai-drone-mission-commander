@@ -155,7 +155,7 @@ class AiDroneMissionCommanderApplicationTests {
                 .andExpect(jsonPath("$.components.schemas.ChatRequest.properties.message.type").value("string"))
                 .andReturn();
         JsonNode spec = objectMapper.readTree(result.getResponse().getContentAsString());
-        assertThat(spec.path("paths").size()).isEqualTo(4);
+        assertThat(spec.path("paths").size()).isEqualTo(18);
         JsonNode streaming = spec.path("paths").path("/api/chat/stream").path("get");
         assertThat(streaming.at("/responses/200/content/text~1event-stream").isMissingNode()).isFalse();
         assertThat(streaming.path("parameters").size()).isEqualTo(3);

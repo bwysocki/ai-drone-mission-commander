@@ -19,6 +19,7 @@ import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.context.annotation.Profile;
 import org.springframework.web.server.ResponseStatusException;
 import pl.stalostech.ai_drone_mission_commander.agent.ChatService;
 import pl.stalostech.ai_drone_mission_commander.agent.exception.IncompleteChatStreamException;
@@ -28,6 +29,7 @@ import pl.stalostech.ai_drone_mission_commander.api.mapper.ChatRequestMapper;
 import reactor.core.publisher.Flux;
 
 @RestController
+@Profile("!simulator")
 @Tag(name = "Chat")
 public class ChatStreamController {
     private static final Logger log = LoggerFactory.getLogger(ChatStreamController.class);

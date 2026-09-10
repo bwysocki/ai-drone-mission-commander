@@ -80,7 +80,40 @@ intent reaches the API. MVC tests verify invalid user input returns 400, invalid
 output returns 502 and provider transport errors return 503. Error responses and logs
 do not reveal rejected model content. Tests require no real credentials or model calls.
 
-The following scenarios are planned for later milestones.
+# Milestone 4 — Deterministic simulation
+
+Start with the `simulator` profile and call `POST /api/simulation/reset` before each
+scenario. These scenarios use real Java services and no AI model.
+
+| Scenario | Operations | Expected result |
+|---|---|---|
+| Normal inspection | Create Alpha → SECTOR_B, INSPECTION, returnHome=true; execute returned ID | COMPLETED, Alpha at BASE with 59%, no anomaly |
+| One-way patrol | Create Charlie → SECTOR_C, PATROL, returnHome=false; execute | COMPLETED, Charlie at SECTOR_C with 49%, no inspection result |
+| Inspection anomaly | Create Alpha → SECTOR_C, INSPECTION, returnHome=true; execute | COMPLETED, simulated vehicle finding, Alpha at BASE with 47% |
+| Battery changed after planning | Create Alpha → SECTOR_B with return; inject BATTERY_DROP amount=60 for Alpha; execute | FAILED, battery stays 22%, position stays BASE, no inspection |
+| Weather and position changed | Create Alpha → SECTOR_B with return; move Alpha to SECTOR_A; inject STRONG_WIND; execute | Route recalculated to 44 movement points plus 3 activity; completes at BASE with 28% |
+| Hardware unavailable | Inject GPS_LOST, MOTOR_WARNING or COMMUNICATION_LOST for Alpha; attempt movement or mission | Direct move returns 409; mission becomes FAILED with no movement or extra consumption |
+| GPS degradation | Inject GPS_DEGRADED for Alpha | GPS is DEGRADED; this technical simulator still permits movement |
+| Repeat execution | Execute a completed mission again | 409; no additional battery consumption |
+| Reset | Inject faults and create missions, then reset | Initial fixtures restored; missions and history empty |
+| Old mission after reset | Create a mission, reset, create another, then execute the old ID | 404; the new mission and all drones remain unchanged |
+| Misspelled event field | Send BATTERY_DROP with `ammount: 60` instead of `amount: 60` | 400; battery and event history remain unchanged |
+
+Read `/api/simulation/world` to inspect all state and event history. BATTERY_DROP
+clamps at zero; GPS_DEGRADED never repairs LOST GPS. A reset clears both faults.
+Mission IDs are not reused across resets in a running world; always use the ID
+returned by creation. Unknown JSON fields are rejected before mutations.
+The current world uses SECTOR_A/B/C, not the BRAVO name from the earlier standalone
+extraction example. Commands intended for later simulator use should name these IDs.
+
+Execution holds a shared world lock for the complete operation. Concurrent events
+are applied before or after execution; this milestone has no mid-flight timeline.
+`DroneWorldTest` also verifies immutable snapshots, exact route costs, rejected inputs,
+concurrent battery updates and single execution under concurrent requests.
+`SimulationControllerTest` verifies the same services through MVC, including the
+standalone profile, Swagger and absence of AI beans when credentials are blank.
+
+The following scenarios involve safety policies or agent orchestration planned for later milestones.
 
 ---
 

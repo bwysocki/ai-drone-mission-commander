@@ -1,148 +1,144 @@
-# Milestone 3 — Structured Output
+# Milestone 4 — Drone World Simulator
 
 ## Problem
 
-A free-form answer cannot serve as a dependable input to mission orchestration.
-This milestone extracts a typed intent from a command such as:
+An AI mission commander needs an environment it can inspect and affect. Real drone
+hardware would make the learning project harder to run and test, so this milestone
+introduces a deterministic Java world. Identical fixtures and operations produce
+identical outcomes without model calls, clocks, random IDs or background workers.
+
+The simulator is the foundation for later tool calling. No Spring AI tool annotations
+or automatic connection from intent extraction to execution are introduced here.
+
+## State and services
+
+`DroneWorld` owns drone status, sectors, weather, missions and injected-event history.
+Public reads return immutable records and collection snapshots. Its initial drones
+are Alpha (82%, BASE, READY), Bravo (41%, SECTOR_A, IDLE) and Charlie (67%, BASE, READY).
+Weather starts at 12 km/h wind, no rain and GOOD visibility.
+
+`Drone` is identity; `DroneStatus` holds changing battery, position, activity state
+and fault flags. `Position` stores flat-map coordinates in kilometres. `Mission`,
+`Route` and `InspectionResult` capture execution state and deterministic output.
+The existing `MissionType` supports INSPECTION and PATROL.
+
+The services have small responsibilities:
+
+| Service | Responsibility |
+|---|---|
+| DroneWorld | State ownership, initial fixtures and reset |
+| DroneSimulationService | Status reads, movement, battery consumption and return home |
+| MissionSimulationService | Mission creation, current-state checks and execution |
+| RouteService | Straight-line routes and movement energy estimates |
+| WeatherService | Current weather |
+| SectorService | Sector reads and fixed inspection findings |
+| SimulationEventService | Fault injection and sequenced history |
+
+Constructors can be called directly in ordinary Java tests. Spring's component
+annotations only provide application wiring; the simulator has no AI dependency.
+
+## Deterministic routes and energy
+
+The map has BASE `(0,0)`, SECTOR_A `(2,0)`, SECTOR_B `(0,3)` and SECTOR_C `(4,3)`.
+Each flight leg uses Euclidean distance and consumes percentage points:
+
+```java
+double cost = Math.ceil(distance * 2 * (1 + weather.windKmh() / 20.0));
+```
+
+The route total sums individually rounded legs. An inspection costs another 3
+points, and a patrol costs 2. Thus Alpha inspecting SECTOR_B and returning home in
+the initial weather consumes `10 + 3 + 10`, leaving 59% battery.
+
+This is a reproducible energy model for examples, not a physical model of a drone.
+Rain and visibility are exposed as state but do not currently affect consumption.
+Inspection results are fixtures: SECTOR_C contains a simulated vehicle; the other
+sectors have no anomalies. Patrols do not produce inspection results.
+
+## Mission lifecycle and consistency
+
+A mission is first CREATED with a route quote. Creation does not reserve the drone
+or consume battery. At execution the service recalculates the route using the
+current weather and position, then checks the complete budget, including return.
 
 ```text
-Send Alpha to Bravo, inspect the area and return home.
+CREATED
+  -> validate current technical state and total energy
+  -> RUNNING -> COMPLETED
+  -> FAILED if a precondition cannot be met
 ```
 
-The expected domain result is:
+GPS loss, a motor warning, communication loss or an insufficient total battery
+budget prevent execution. A failed precondition records the failure without moving
+or charging the drone. A completed or failed mission cannot be executed again.
+Create a new mission to retry after resetting or correcting the world.
+
+Services synchronize complete operations on the same `DroneWorld` instance:
 
 ```java
-new MissionIntent("alpha", MissionType.INSPECTION, "BRAVO", true);
+synchronized (world) {
+    var mission = world.mission(id);
+    // Check transition, recompute route, validate, move, consume and save result.
+}
 ```
 
-The endpoint is `POST /api/missions/intent`. It interprets a command without checking
-world state or executing a mission. Request and response examples are in the README
-and Swagger UI's Missions group.
+This makes state changes atomic relative to other service operations. Concurrent
+attempts to execute the same mission charge the battery once. A read obtains a
+consistent snapshot; it cannot mutate stored records or see half a mission.
+RUNNING and IN_MISSION are internal transition states because execution is instant
+and synchronous. Events apply before or after a mission, not mid-flight. Time-step
+simulation and fault recovery during flight are not implemented in this milestone.
 
-## Spring AI concepts
+## Events
 
-`MissionIntentService` creates a dedicated `ChatClient` with instructions loaded
-from `prompts/mission-intent.st`. The user's command is passed as a `UserMessage`,
-so JSON braces in user input remain literal text.
+The simulator supports BATTERY_DROP, GPS_DEGRADED, GPS_LOST, STRONG_WIND,
+MOTOR_WARNING and COMMUNICATION_LOST. Drone events require a known drone ID;
+STRONG_WIND changes global weather and must not specify a drone.
 
-The service uses `BeanOutputConverter<MissionIntentOutput>` with a strict Jackson
-mapper. The converter derives the provider schema from the output record, supplies
-format instructions and parses the response. The essential call is:
+Battery drop defaults to 20 points and clamps at zero. Its history entry stores the
+actual drop. Strong wind defaults to 45 km/h. Degrading an already lost GPS signal
+does not recover it. Invalid events are rejected before changing state or history.
+Event sequence numbers and mission IDs restart on reset, allowing repeatable scenarios.
 
-```java
-var result = client.prompt()
-        .messages(new UserMessage(message))
-        .call()
-        .responseEntity(converter, spec -> {
-            if (nativeOutput) {
-                spec.useProviderStructuredOutput();
-            }
-        });
+## API and standalone mode
+
+`SimulationController` exposes state reads, route quotes, mission creation and
+execution, movement, return home, events and reset under `/api/simulation`.
+Swagger's Simulation group can exercise these operations. They are explicit simulator
+commands, separate from the existing AI intent-extraction endpoint.
+
+Run without an API key:
+
+```bash
+./mvnw spring-boot:run -Dspring-boot.run.profiles=simulator
 ```
 
-`responseEntity` retains both the typed result and the original `ChatResponse`.
-That lets the service require a `STOP` finish reason before accepting the intent.
-A syntactically valid object returned after a token limit or filtering is rejected.
+`application-simulator.properties` disables model autoconfiguration, and the
+`simulator` profile excludes AI services and controllers. Normal startup retains
+both AI and simulation endpoints. All world state is in memory and lost on restart.
 
-Two modes are exposed on the same endpoint:
+Input errors return 400, unknown objects 404 and operation conflicts 409. Execution
+returns a mission with state COMPLETED or FAILED under HTTP 200; clients must inspect
+that state. Full curl examples and exact fixture values are in the README.
 
-| Request | Schema delivery |
-|---|---|
-| `/api/missions/intent` | Format instructions in the prompt |
-| `/api/missions/intent?nativeOutput=true` | Provider-native JSON Schema |
+One surprising test failure involved JSON enum coercion: numeric `0` was accepted
+as the first event type. `ApiJsonConfiguration` now rejects numeric enum ordinals,
+null primitive values, scalar coercion and duplicate JSON keys in API input. Required
+mission fields are enforced through the existing record contract. This prevents
+malformed input from silently becoming a valid mutation command.
 
-The local HTTP integration tests verify that native mode sends
-`response_format.type=json_schema`, `strict=true`, all four required properties
-and `additionalProperties=false`. Prompt mode includes schema instructions instead.
-The selected provider model must support native structured output; there is no silent
-fallback if it rejects the format.
+## Verification and lessons
 
-## Untrusted output versus domain values
+`DroneWorldTest` uses real Java services without Spring or mocks. It covers initial
+state, immutable snapshots, routes, leg rounding, activity costs, inspections,
+patrols, return home, all event types, reset, failures and concurrent state updates.
 
-`agent.dto.MissionIntentOutput` models the provider response. Its schema permits
-explicit nulls for unknown drone IDs, sectors and mission types. This matters for
-native output: mandatory non-null values would conflict with instructions not to
-invent details when a command is incomplete.
+`SimulationControllerTest` boots the simulator profile with blank credentials and
+real services. It checks API scenarios, Swagger, invalid input and the absence of
+AI model/service beans. Existing AI tests continue using their localhost provider.
 
-All fields must still be present. The service's strict parser rejects null values,
-then constructs the validated domain object:
-
-```java
-var output = result.getEntity();
-return new MissionIntent(
-        output.droneId(), output.type(), output.targetSector(), output.returnHome());
-```
-
-`MissionIntent` trims identifiers, normalizes their case with `Locale.ROOT` and
-checks their syntax. It requires a supported `MissionType`: `INSPECTION` or `PATROL`.
-Drone IDs use lowercase and sector IDs uppercase. Whether those identifiers exist
-will be checked against the simulator in a later milestone.
-
-The extraction instruction sets `returnHome=false` when no return is requested.
-A missing JSON boolean is nevertheless an output error; Java must not silently
-replace an omitted field with the primitive default.
-
-The other domain records establish small contracts for future work:
-
-- `MissionPlan`: intent and proposed steps; a proposal is not execution approval.
-- `MissionAssessment`: status and reasons, reserved for deterministic Java rules.
-- `MissionReport`: intent, outcome, summary and observations from execution.
-
-Their constructors validate required values and create immutable copies of lists.
-This milestone does not expose endpoints that ask the model to invent assessments
-or completed mission reports.
-
-## Validation and errors
-
-The dedicated JSON mapper rejects scalar coercion, unknown fields, missing fields,
-nulls, duplicate keys, numeric enums and trailing JSON values. Domain constructors
-reject blank or malformed identifiers. `InvalidMissionOutputException` deliberately
-contains no original parser exception or model content.
-
-The API returns:
-
-- 400 for invalid request input.
-- 502 with title `Invalid AI output` for rejected model output, including incomplete
-  mission details or abnormal generation completion.
-- The existing sanitized provider 502/503 responses for provider failures.
-
-Malformed output is not repaired through another model call. Spring AI also offers
-`validateSchema()` with a self-correcting retry loop; this milestone uses strict
-conversion and deterministic value validation instead. SDK transport retries remain
-configured independently.
-
-Schema compliance establishes structure, not truth. Tests cannot prove that a live
-model will identify the right drone or understand every ambiguous command. The
-prompt instructs it to mark unknown or ambiguous fields as null; Java rejects that
-output. A fabricated but well-formed identifier still requires later verification.
-
-## Verification
-
-Most checks use plain JUnit and Mockito with a real ChatClient and converter.
-They cover canonical intent extraction, literal user input, invalid JSON, coercion,
-missing fields, unknown enums, output truncation and provider error propagation.
-Domain tests verify normalization and immutable collection snapshots. MVC slice
-tests verify request validation and the 400/502/503 API boundary.
-
-The existing localhost provider fixture additionally checks both schema delivery
-modes over the real SDK, rejected output in both modes, sanitized logs and OpenAPI.
-It uses dummy credentials and disabled transport retries. No live model was called.
-
-For a manual comparison, send the README command once in each mode, then try an
-incomplete command such as `Inspect the area.`. Inspect semantic accuracy as well
-as the returned HTTP status. Live evaluation remains separate from automated tests.
-
-## Lessons
-
-A record alone is not sufficient validation. Required fields and strict conversion
-prevent missing booleans and coerced strings from becoming plausible domain data.
-Native schemas also need a way to represent missing information, while the domain
-can require complete values. Keeping provider output separate makes both contracts
-explicit. Generation metadata remains useful even when the answer parses correctly.
-
-References:
-
-- [Spring AI native structured output](https://docs.spring.io/spring-ai/reference/api/structured-output/native.html)
-- [Spring AI schema validation and self-correction](https://docs.spring.io/spring-ai/reference/api/structured-output/validation.html)
-
-Implementation checked against the project's Spring AI 2.0.1 and Jackson 3 dependencies.
+The main lesson is that reproducible state and atomic operations make later agent
+behavior testable. A route quote is not an execution guarantee: current state must
+be checked again before applying changes. These technical checks enforce simulator
+invariants; battery reserves, mission weather policy and authorization still belong
+to the later deterministic safety validator. No real drone hardware is involved.

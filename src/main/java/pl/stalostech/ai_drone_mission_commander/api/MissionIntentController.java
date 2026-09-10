@@ -9,12 +9,14 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.context.annotation.Profile;
 import pl.stalostech.ai_drone_mission_commander.agent.MissionIntentService;
 import pl.stalostech.ai_drone_mission_commander.api.dto.MissionIntentRequest;
 import pl.stalostech.ai_drone_mission_commander.api.mapper.ChatRequestMapper;
 import pl.stalostech.ai_drone_mission_commander.domain.MissionIntent;
 
 @RestController
+@Profile("!simulator")
 @Tag(name = "Missions", description = "Typed intent extraction; no safety assessment or execution")
 public class MissionIntentController {
     private final MissionIntentService service;

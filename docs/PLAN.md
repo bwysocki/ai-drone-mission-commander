@@ -365,17 +365,17 @@ This simulator replaces any need for real drone hardware.
 
 Create:
 
-* [ ] `Drone`
-* [ ] `DroneStatus`
-* [ ] `DroneState`
-* [ ] `Mission`
-* [ ] `MissionState`
-* [ ] `MissionType`
-* [ ] `Sector`
-* [ ] `Position`
-* [ ] `Weather`
-* [ ] `Route`
-* [ ] `InspectionResult`
+* [x] `Drone`
+* [x] `DroneStatus`
+* [x] `DroneState`
+* [x] `Mission`
+* [x] `MissionState`
+* [x] `MissionType`
+* [x] `Sector`
+* [x] `Position`
+* [x] `Weather`
+* [x] `Route`
+* [x] `InspectionResult`
 
 ### Initial World
 
@@ -418,46 +418,53 @@ visibility: GOOD
 
 Create:
 
-* [ ] `DroneWorld`
-* [ ] `DroneSimulationService`
-* [ ] `MissionSimulationService`
-* [ ] `RouteService`
-* [ ] `WeatherService`
-* [ ] `SectorService`
-* [ ] `SimulationEventService`
+* [x] `DroneWorld`
+* [x] `DroneSimulationService`
+* [x] `MissionSimulationService`
+* [x] `RouteService`
+* [x] `WeatherService`
+* [x] `SectorService`
+* [x] `SimulationEventService`
 
 ### Simulator Capabilities
 
 Support:
 
-* [ ] reading drone status
-* [ ] reading weather
-* [ ] reading sector information
-* [ ] calculating routes
-* [ ] estimating battery usage
-* [ ] creating missions
-* [ ] executing missions
-* [ ] moving drones
-* [ ] consuming battery
-* [ ] returning drones home
-* [ ] injecting simulation events
+* [x] reading drone status
+* [x] reading weather
+* [x] reading sector information
+* [x] calculating routes
+* [x] estimating battery usage
+* [x] creating missions
+* [x] executing missions
+* [x] moving drones
+* [x] consuming battery
+* [x] returning drones home
+* [x] injecting simulation events
 
 ### Simulation Events
 
 Support:
 
-* [ ] `BATTERY_DROP`
-* [ ] `GPS_DEGRADED`
-* [ ] `GPS_LOST`
-* [ ] `STRONG_WIND`
-* [ ] `MOTOR_WARNING`
-* [ ] `COMMUNICATION_LOST`
+* [x] `BATTERY_DROP`
+* [x] `GPS_DEGRADED`
+* [x] `GPS_LOST`
+* [x] `STRONG_WIND`
+* [x] `MOTOR_WARNING`
+* [x] `COMMUNICATION_LOST`
 
 ### Definition of Done
 
 The simulator can be used without any AI code.
 
 All deterministic domain logic must have normal Java tests.
+
+Implemented with synchronous, atomic execution and deterministic fixture findings.
+Run with the `simulator` profile to use the API and Swagger without OpenAI credentials.
+Events affect subsequent operations; mid-flight event processing is outside this
+instantaneous model. Route costs are re-evaluated at execution time. Technical
+movement checks are implemented here; mission policy remains a later safety milestone.
+See [Milestone 4 notes](article-notes.md) and [scenarios](scenarios.md).
 
 ---
 

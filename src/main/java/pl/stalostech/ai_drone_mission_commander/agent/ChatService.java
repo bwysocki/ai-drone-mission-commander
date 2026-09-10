@@ -15,10 +15,12 @@ import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
+import org.springframework.context.annotation.Profile;
 import pl.stalostech.ai_drone_mission_commander.agent.exception.IncompleteChatStreamException;
 import reactor.core.publisher.Flux;
 
 @Service
+@Profile("!simulator")
 public class ChatService {
 
     private final ChatClient chatClient;

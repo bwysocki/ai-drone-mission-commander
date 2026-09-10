@@ -9,6 +9,7 @@ import org.springframework.ai.converter.BeanOutputConverter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
+import org.springframework.context.annotation.Profile;
 import pl.stalostech.ai_drone_mission_commander.agent.exception.InvalidMissionOutputException;
 import pl.stalostech.ai_drone_mission_commander.domain.MissionIntent;
 import pl.stalostech.ai_drone_mission_commander.agent.dto.MissionIntentOutput;
@@ -23,6 +24,7 @@ import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.type.LogicalType;
 
 @Service
+@Profile("!simulator")
 public class MissionIntentService {
     private final ChatClient client;
     private final BeanOutputConverter<MissionIntentOutput> converter;

@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.context.annotation.Profile;
 
 import pl.stalostech.ai_drone_mission_commander.agent.ChatService;
 import pl.stalostech.ai_drone_mission_commander.api.dto.ChatReply;
@@ -18,6 +19,7 @@ import pl.stalostech.ai_drone_mission_commander.api.mapper.ChatRequestMapper;
 import pl.stalostech.ai_drone_mission_commander.api.mapper.ChatResponseMapper;
 
 @RestController
+@Profile("!simulator")
 @RequestMapping("/api/chat")
 @Tag(name = "Chat", description = "Complete answers and streaming with configurable model options")
 @ApiResponses({
