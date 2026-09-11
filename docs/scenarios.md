@@ -181,3 +181,22 @@ request for the four Java tool results (including battery 62%). It also covers
 unknown IDs, malformed arguments, unknown execution tools, input validation and
 definition discovery. These deterministic tests verify integration, not the live
 model's choice of tools or the quality of its answer; steps above check those manually.
+
+# Milestone 6 — Observe repeated model calls
+
+Send the milestone 5 mission question to `POST /api/agent/chat`, then follow its
+generated request ID in `AgentIterationLogger` logs. Every model invocation has
+a numbered START and RESPONSE (or FAILED). A response requesting tools is followed
+by another invocation containing their results. The number and grouping of calls
+depend on the model; there is no fixed production sequence.
+
+Deterministic coverage in `WorldAgentLoopTest` scripts three responses: first a
+drone lookup, then weather and route requests together, then an answer. It verifies
+the tool IDs, arguments, accumulated results and unchanged simulator state. Another
+case corrects an unknown drone after receiving NOT_FOUND. Tests also check isolated
+request counters and sanitized failure logs.
+
+The manual-cycle test invokes ChatModel, ToolCallingManager and ChatModel explicitly,
+and compares its follow-up conversation with the automatic advisor's conversation.
+The endpoint remains automatic; this test is an educational comparison, not a
+second production execution mode. All these tests run without a real provider.

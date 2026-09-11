@@ -473,3 +473,23 @@ reported token usage across the tool-calling turns.
 The `simulator` profile keeps these AI endpoints disabled. Automated tests use
 in-memory services and a small local provider stub with dummy credentials; they do
 not call a real model.
+
+## Milestone 6: observe the agent loop
+
+The existing `POST /api/agent/chat` endpoint logs each model invocation with a
+generated `requestId`, an `iteration` counter and `START` / `RESPONSE` / `FAILED`
+phases. `priorToolResults` counts accumulated tool results in the prompt;
+`toolCalls` counts tools requested by that response. Several tools can be requested
+within one iteration. Each HTTP request starts its own counter at 1.
+
+Logs contain counts rather than prompts, tool arguments or returned data. Follow
+one request ID when multiple requests run at once. To disable these informational
+traces, set `logging.level.pl.stalostech.ai_drone_mission_commander.agent.AgentIterationLogger=WARN`.
+
+`WorldAgentLoopTest` demonstrates multiple automatic rounds, recovery after an
+invalid lookup and a single manual cycle with `ToolCallingManager`. The manual
+cycle exists only in tests; production continues to use Spring AI's automatic loop.
+
+```bash
+./mvnw test -Dtest=WorldAgentLoopTest
+```

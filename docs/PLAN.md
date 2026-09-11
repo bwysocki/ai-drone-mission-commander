@@ -543,16 +543,22 @@ Understand what makes a tool-using chatbot an agent.
 
 ### Tasks
 
-* [ ] Understand `ToolCallingAdvisor`
-* [ ] Observe one complete tool loop
-* [ ] Log every agent iteration
-* [ ] Inspect Assistant tool calls
-* [ ] Inspect Tool messages
-* [ ] Compare automatic and manual tool execution
-* [ ] Temporarily implement one manual tool cycle
-* [ ] Restore automatic tool loop
-* [ ] Handle multi-tool scenarios
-* [ ] Handle tool execution errors
+* [x] Understand `ToolCallingAdvisor`
+* [x] Observe one complete tool loop
+* [x] Log every agent iteration
+* [x] Inspect Assistant tool calls
+* [x] Inspect Tool messages
+* [x] Compare automatic and manual tool execution
+* [x] Temporarily implement one manual tool cycle
+* [x] Restore automatic tool loop
+* [x] Handle multi-tool scenarios
+* [x] Handle tool execution errors
+
+Implemented using the existing automatic endpoint. `AgentIterationLogger` records
+each model invocation without raw message data. `WorldAgentLoopTest` compares a
+manual single-cycle exercise with the automatic loop and verifies sequential rounds,
+batched tool calls and recovery from tool errors. Manual execution stays in test
+code; production uses `ToolCallingAdvisor`.
 
 ### Mental Model
 

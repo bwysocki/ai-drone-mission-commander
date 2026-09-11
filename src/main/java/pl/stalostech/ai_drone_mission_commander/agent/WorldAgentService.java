@@ -30,7 +30,8 @@ public class WorldAgentService {
 
     public ChatResponse chat(String message, OpenAiChatOptions.Builder options) {
         try {
-            var request = client.prompt().messages(new UserMessage(message));
+            var request = client.prompt().messages(new UserMessage(message))
+                    .advisors(new AgentIterationLogger());
             if (options != null) request.options(options);
             return request.call().chatResponse();
         } catch (IllegalStateException | ToolCallLimitExceededException exception) {
