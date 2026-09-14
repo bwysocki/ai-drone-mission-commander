@@ -38,7 +38,8 @@ class WorldAgentLoopTest {
 
     private WorldAgentService agent() throws Exception {
         when(model.getOptions()).thenReturn(OpenAiChatOptions.builder().model("test-model").build());
-        return new WorldAgentService(ChatClient.builder(model), tools, new ClassPathResource("prompts/world-agent.st"));
+        return new WorldAgentService(ChatClient.builder(model), tools, new ClassPathResource("prompts/world-agent.st"),
+                new pl.stalostech.ai_drone_mission_commander.agent.advisor.MissionContextAdvisor(world), List.of());
     }
 
     private static AssistantMessage.ToolCall call(String id, String name, String arguments) {

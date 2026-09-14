@@ -11,9 +11,17 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import pl.stalostech.ai_drone_mission_commander.agent.exception.InvalidMissionOutputException;
 import pl.stalostech.ai_drone_mission_commander.agent.exception.AgentToolException;
+import pl.stalostech.ai_drone_mission_commander.simulation.exception.SimulationNotFoundException;
 
 @RestControllerAdvice(assignableTypes = {ChatController.class, MissionIntentController.class, WorldAgentController.class})
 public class ChatExceptionHandler {
+
+    @ExceptionHandler(SimulationNotFoundException.class)
+    public ProblemDetail handleMissingMissionContext() {
+        var problem = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, "The selected mission does not exist.");
+        problem.setTitle("Mission not found");
+        return problem;
+    }
 
     @ExceptionHandler(AgentToolException.class)
     public ProblemDetail handleAgentToolError() {

@@ -596,15 +596,22 @@ Understand Spring AI's main composition mechanism.
 
 ### Tasks
 
-* [ ] Learn advisor chain behavior
-* [ ] Understand advisor ordering
-* [ ] Inspect default advisors
-* [ ] Create `MissionContextAdvisor`
-* [ ] Add simulation context
-* [ ] Add current mission context
-* [ ] Add conversation identifiers
-* [ ] Add development logging advisor
-* [ ] Verify interaction with tool calling
+* [x] Learn advisor chain behavior
+* [x] Understand advisor ordering
+* [x] Inspect default advisors
+* [x] Create `MissionContextAdvisor`
+* [x] Add simulation context
+* [x] Add current mission context
+* [x] Add conversation identifiers
+* [x] Add development logging advisor
+* [x] Verify interaction with tool calling
+
+The agent endpoint now uses MissionContextAdvisor before the automatic tool loop.
+It adds simulator inventory and an explicitly selected mission snapshot. UUID
+conversation identifiers correlate requests without memory. The dev-only logging
+advisor exposes the actual chain; AgentIterationLogger remains inside the loop.
+Tests cover ordering, single enrichment, fresh and isolated context, HTTP validation
+and sanitized diagnostics. Memory and RAG remain later milestones.
 
 ### Intended Chain
 

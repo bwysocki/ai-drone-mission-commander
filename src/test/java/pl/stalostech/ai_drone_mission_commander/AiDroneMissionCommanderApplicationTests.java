@@ -161,6 +161,12 @@ class AiDroneMissionCommanderApplicationTests {
                 .andReturn();
         JsonNode spec = objectMapper.readTree(result.getResponse().getContentAsString());
         assertThat(spec.path("paths").size()).isEqualTo(20);
+        assertThat(spec.at("/components/schemas/AgentChatRequest/properties/conversationId/format").asText())
+                .isEqualTo("uuid");
+        assertThat(spec.at("/components/schemas/AgentChatRequest/properties/missionId/type").asText())
+                .isEqualTo("string");
+        assertThat(spec.at("/components/schemas/AgentChatReply/properties/conversationId/format").asText())
+                .isEqualTo("uuid");
         JsonNode streaming = spec.path("paths").path("/api/chat/stream").path("get");
         assertThat(streaming.at("/responses/200/content/text~1event-stream").isMissingNode()).isFalse();
         assertThat(streaming.path("parameters").size()).isEqualTo(3);
@@ -480,6 +486,60 @@ class AiDroneMissionCommanderApplicationTests {
         var call = calls.addObject();
         call.put("id", "call-" + calls.size()).put("type", "function");
         call.putObject("function").put("name", name).put("arguments", arguments);
+    }
+
+    @Test
+    void agentExposesConversationIdAndSendsSelectedMissionContext() throws Exception {
+        var world = context.getBean(pl.stalostech.ai_drone_mission_commander.simulation.DroneWorld.class);
+        world.reset();
+        var mission = context.getBean(pl.stalostech.ai_drone_mission_commander.simulation.MissionSimulationService.class)
+                .create(new pl.stalostech.ai_drone_mission_commander.domain.MissionIntent("alpha",
+                        pl.stalostech.ai_drone_mission_commander.domain.MissionType.INSPECTION, "SECTOR_B", true));
+        var conversation = java.util.UUID.randomUUID().toString();
+        var body = objectMapper.createObjectNode().put("message", "Read the selected mission")
+                .put("conversationId", conversation).put("missionId", mission.id());
+        mvc.perform(post("/api/agent/chat").contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(body)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.conversationId").value(conversation));
+        var sent = objectMapper.readTree(REQUESTS.poll(2, TimeUnit.SECONDS).body());
+        var contextMessages = java.util.stream.StreamSupport.stream(sent.path("messages").spliterator(), false)
+                .filter(message -> message.path("role").asText().equals("system"))
+                .map(message -> message.path("content").asText())
+                .filter(message -> message.startsWith("APPLICATION CONTEXT")).toList();
+        assertThat(contextMessages).hasSize(1);
+        assertThat(contextMessages.getFirst()).contains(mission.id(), "SECTOR_B", "CREATED")
+                .doesNotContain(conversation);
+        body.remove("missionId");
+        mvc.perform(post("/api/agent/chat").contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(body)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.conversationId").value(conversation));
+        var next = REQUESTS.poll(2, TimeUnit.SECONDS).body();
+        assertThat(next).doesNotContain(mission.id());
+        var generated = mvc.perform(post("/api/agent/chat").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"message\":\"Read Alpha\"}")).andExpect(status().isOk()).andReturn();
+        var id = objectMapper.readTree(generated.getResponse().getContentAsString()).path("conversationId").asText();
+        assertThat(java.util.UUID.fromString(id).toString()).isEqualTo(id).isNotEqualTo(conversation);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "{\"message\":\"x\",\"conversationId\":\"not-a-uuid\"}",
+            "{\"message\":\"x\",\"conversationId\":123}",
+            "{\"message\":\"x\",\"missionId\":123}",
+            "{\"message\":\"x\",\"missionId\":\" \"}"
+    })
+    void rejectsInvalidAgentContextBeforeCallingProvider(String body) throws Exception {
+        mvc.perform(post("/api/agent/chat").contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isBadRequest());
+        assertThat(REQUESTS).isEmpty();
+    }
+
+    @Test
+    void missingMissionContextReturns404WithoutCallingProvider() throws Exception {
+        mvc.perform(post("/api/agent/chat").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"message\":\"Read mission\",\"missionId\":\"missing-private-mission\"}"))
+                .andExpect(status().isNotFound()).andExpect(jsonPath("$.title").value("Mission not found"));
+        assertThat(REQUESTS).isEmpty();
     }
 
     private void setToolResponse(tools.jackson.databind.node.ArrayNode calls) {

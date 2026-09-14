@@ -200,3 +200,26 @@ The manual-cycle test invokes ChatModel, ToolCallingManager and ChatModel explic
 and compares its follow-up conversation with the automatic advisor's conversation.
 The endpoint remains automatic; this test is an educational comparison, not a
 second production execution mode. All these tests run without a real provider.
+
+# Milestone 7 — Explicit mission context
+
+Create an inspection mission for Alpha and SECTOR_B using the Simulation API.
+POST to `/api/agent/chat` with its returned `missionId`, a UUID `conversationId`,
+and a request to summarize the selected mission. Expect the same conversation ID
+in the reply. The model receives the simulator inventory and selected mission once,
+before any tool calls. Tools remain available to verify current facts.
+
+Repeat after completing the mission through the Simulation API: a new request's
+context must reflect COMPLETED. Repeat with the same conversation ID and no
+missionId: context must contain no selected mission and no earlier user messages.
+Reset the simulator and try the old missionId: expect 404 without a provider call.
+
+With the dev profile, check that MissionContextAdvisor precedes ToolCallingAdvisor
+and AgentIterationLogger follows it. The pipeline log runs once; iteration logs run
+per model invocation, with matching request/conversation IDs and no raw payloads.
+
+Automated coverage: WorldAgentContextTest checks ordering, one context message per
+round, fresh state, concurrent selections, options and literal text preservation,
+absence of memory, dev-profile activation and sanitized logs.
+AiDroneMissionCommanderApplicationTests checks the HTTP contract, generated IDs,
+selected mission data sent to the local provider, invalid fields and missing missions.

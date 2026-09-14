@@ -1,6 +1,9 @@
 package pl.stalostech.ai_drone_mission_commander.api;
 
 import java.util.List;
+import java.util.UUID;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -10,8 +13,8 @@ import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.context.annotation.Profile;
 import org.springframework.web.bind.annotation.*;
 import pl.stalostech.ai_drone_mission_commander.agent.WorldAgentService;
-import pl.stalostech.ai_drone_mission_commander.api.dto.ChatReply;
-import pl.stalostech.ai_drone_mission_commander.api.dto.ChatRequest;
+import pl.stalostech.ai_drone_mission_commander.api.dto.AgentChatReply;
+import pl.stalostech.ai_drone_mission_commander.api.dto.AgentChatRequest;
 import pl.stalostech.ai_drone_mission_commander.api.mapper.ChatRequestMapper;
 import pl.stalostech.ai_drone_mission_commander.api.mapper.ChatResponseMapper;
 import pl.stalostech.ai_drone_mission_commander.tools.WorldToolRegistry;
@@ -32,14 +35,22 @@ public class WorldAgentController {
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Answer based on available tool results"),
             @ApiResponse(responseCode = "400", description = "Invalid message or options", content = @Content),
+            @ApiResponse(responseCode = "404", description = "Selected mission does not exist", content = @Content),
             @ApiResponse(responseCode = "502", description = "Tool orchestration failed or provider returned an invalid answer", content = @Content),
             @ApiResponse(responseCode = "503", description = "Provider unavailable or rate limited", content = @Content)
     })
     @Operation(summary = "Ask about the live simulated world",
-            description = "The model may call read-only tools before answering. Uses the configured provider and optional request options. Does not execute or approve missions. Tool errors are fed back to the model as sanitized JSON; unrecoverable agent errors return 502 and provider errors 502/503.")
-    public ChatReply chat(@RequestBody ChatRequest request) {
+            description = "The model may call read-only tools before answering. Includes simulator context and an optional missionId selection. Returns the supplied conversationId or a generated UUID; no conversation memory is stored yet. Uses the configured provider and optional request options. Does not execute or approve missions. Missing selected missions return 404; unrecoverable agent errors return 502 and provider errors 502/503.")
+    public AgentChatReply chat(@RequestBody AgentChatRequest request) {
         ChatRequestMapper.validateMessage(request.message());
-        return ChatResponseMapper.toReply(agent.chat(request.message(), ChatRequestMapper.options(request.options())));
+        if (request.missionId() != null && request.missionId().isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "missionId must not be blank");
+        }
+        UUID conversationId = request.conversationId() == null ? UUID.randomUUID() : request.conversationId();
+        String missionId = request.missionId() == null ? null : request.missionId().strip();
+        var reply = ChatResponseMapper.toReply(agent.chat(request.message(),
+                ChatRequestMapper.options(request.options()), conversationId, missionId));
+        return new AgentChatReply(reply.message(), reply.metadata(), conversationId);
     }
 
     @GetMapping("/tools")

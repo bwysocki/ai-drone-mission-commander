@@ -493,3 +493,55 @@ cycle exists only in tests; production continues to use Spring AI's automatic lo
 ```bash
 ./mvnw test -Dtest=WorldAgentLoopTest
 ```
+
+## Milestone 7: mission context and advisor composition
+
+`POST /api/agent/chat` accepts optional `conversationId` (UUID) and `missionId`
+fields in addition to `message` and `options`. Successful replies retain
+`message` and `metadata`, and add `conversationId`; a UUID is generated when omitted.
+The ID correlates requests and logs. It does not store messages or remember the
+selected mission. Supply `missionId` again on each request that needs it.
+
+`MissionContextAdvisor` adds an application context message once, before the tool
+loop: the simulated environment, known drone/sector IDs and the explicitly selected
+mission's snapshot. It does not select the latest mission automatically.
+Telemetry still comes from tools; a request-start snapshot can become stale.
+
+Create a mission through `POST /api/simulation/missions`, copy its returned ID,
+then use **World agent** in Swagger:
+
+```json
+{
+  "message": "Summarize the selected mission and check the drone's current status.",
+  "conversationId": "4ea95657-b281-4330-97c4-9894249bb992",
+  "missionId": "<paste the returned mission ID>"
+}
+```
+
+An unknown or reset mission returns HTTP 404 before a model call. Invalid context
+fields return HTTP 400. Omitting `missionId` selects no mission, even when the
+conversation ID was used previously.
+
+To inspect advisor composition, start with OpenAI configured and the `dev` profile:
+
+```bash
+./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
+```
+
+The development log shows advisor names and their order, plus request/conversation
+IDs. It contains no prompt, answer, tool arguments or mission payload. The chain is:
+
+```text
+DevelopmentLoggingAdvisor (dev only)
+  → MissionContextAdvisor
+    → ToolCallingAdvisor
+      → AgentIterationLogger
+        → model call
+```
+
+Lower order values run first on the request; responses pass back in reverse.
+The context and development advisors run once per request. The iteration logger
+runs inside the tool loop. In Spring AI's log names, the tool advisor appears as
+`Tool Calling Advisor` and the terminal model advisor as `call`.
+Memory and RAG advisors are not part of this milestone. The standalone `simulator`
+profile keeps AI advisors and endpoints disabled.

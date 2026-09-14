@@ -2,6 +2,8 @@ package pl.stalostech.ai_drone_mission_commander.agent;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
@@ -15,6 +17,9 @@ import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
 import pl.stalostech.ai_drone_mission_commander.agent.exception.AgentToolException;
 import pl.stalostech.ai_drone_mission_commander.tools.WorldToolRegistry;
+import pl.stalostech.ai_drone_mission_commander.agent.advisor.AgentRequestContext;
+import pl.stalostech.ai_drone_mission_commander.agent.advisor.MissionContextAdvisor;
+import pl.stalostech.ai_drone_mission_commander.agent.advisor.DevelopmentLoggingAdvisor;
 
 @Service
 @Profile("!simulator")
@@ -23,15 +28,24 @@ public class WorldAgentService {
     private final ChatClient client;
 
     public WorldAgentService(ChatClient.Builder builder, WorldToolRegistry tools,
-            @Value("classpath:prompts/world-agent.st") Resource prompt) throws IOException {
+            @Value("classpath:prompts/world-agent.st") Resource prompt,
+            MissionContextAdvisor missionContext, List<DevelopmentLoggingAdvisor> developmentLoggers) throws IOException {
+        builder.defaultAdvisors(missionContext);
+        developmentLoggers.forEach(logger -> builder.defaultAdvisors(logger));
         client = builder.defaultSystem(prompt.getContentAsString(StandardCharsets.UTF_8))
                 .defaultToolCallbacks(tools.callbacks()).build();
     }
 
     public ChatResponse chat(String message, OpenAiChatOptions.Builder options) {
+        return chat(message, options, UUID.randomUUID(), null);
+    }
+
+    public ChatResponse chat(String message, OpenAiChatOptions.Builder options, UUID conversationId, String missionId) {
+        var context = new AgentRequestContext(UUID.randomUUID(), conversationId, missionId);
         try {
             var request = client.prompt().messages(new UserMessage(message))
-                    .advisors(new AgentIterationLogger());
+                    .advisors(new AgentIterationLogger(context))
+                    .advisors(spec -> spec.param(AgentRequestContext.KEY, context));
             if (options != null) request.options(options);
             return request.call().chatResponse();
         } catch (IllegalStateException | ToolCallLimitExceededException exception) {

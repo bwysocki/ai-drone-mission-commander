@@ -39,6 +39,8 @@ class SimulationControllerTest {
         assertThat(context.getBeansOfType(ChatService.class)).isEmpty();
         assertThat(context.getBeansOfType(MissionIntentService.class)).isEmpty();
         assertThat(context.getBeansOfType(pl.stalostech.ai_drone_mission_commander.agent.WorldAgentService.class)).isEmpty();
+        assertThat(context.getBeansOfType(pl.stalostech.ai_drone_mission_commander.agent.advisor.MissionContextAdvisor.class)).isEmpty();
+        assertThat(context.getBeansOfType(pl.stalostech.ai_drone_mission_commander.agent.advisor.DevelopmentLoggingAdvisor.class)).isEmpty();
         var result = mvc.perform(get("/v3/api-docs")).andExpect(status().isOk()).andReturn();
         var paths = mapper.readTree(result.getResponse().getContentAsString()).path("paths");
         assertThat(paths.has("/api/simulation/missions")).isTrue();
