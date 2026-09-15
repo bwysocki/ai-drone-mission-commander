@@ -1,107 +1,103 @@
-# Milestone 7 — Advisors
+# Milestone 8 — Chat Memory
 
-Tool calling already uses an advisor. This milestone adds application context
-before that loop and makes the composition visible. The goal is to keep context
-enrichment separate from the controller, tool implementations and model call.
+Until now, conversation IDs only correlated requests. Now the agent can interpret
+a follow-up such as “How much battery does it have?” using an earlier message:
+“We are monitoring Alpha.”
 
-## One context message per request
+## Add memory before the tool loop
 
-`MissionContextAdvisor` reads an immutable simulator snapshot and adds a system
-message containing known drone and sector IDs and an optional selected mission.
-Selection is explicit through `missionId`; it never picks another caller's latest
-mission. The snapshot describes the request's starting context. Tools still read
-live telemetry and mission state.
-
-The advisor preserves existing system instructions, literal user text and options:
+The application uses Spring AI's MessageChatMemoryAdvisor with ConversationMemory,
+a small wrapper around MessageWindowChatMemory:
 
 ```java
-return chain.nextCall(request.mutate()
-        .prompt(new Prompt(messages, request.prompt().getOptions())).build());
+builder.defaultAdvisors(MessageChatMemoryAdvisor.builder(memory)
+        .order(ToolCallingAdvisor.DEFAULT_ORDER - 1).build());
 ```
 
-Its order places it immediately before the automatic tool advisor:
+Every request passes its UUID through the standard advisor parameter:
 
 ```java
-public int getOrder() {
-    return ToolCallingAdvisor.DEFAULT_ORDER - 1;
-}
+.advisors(spec -> spec.param(AgentRequestContext.KEY, context)
+        .param(ChatMemory.CONVERSATION_ID, conversationId.toString()))
 ```
 
-This means the context is added once and carried into later tool rounds.
-Putting an enrichment advisor inside the loop would make it run for each model call.
-
-## Identifiers are not memory
-
-The agent request now accepts `conversationId`, an optional UUID, and `missionId`.
-The response returns the supplied conversation ID or a generated one. Each request
-also has a separate generated request ID for tracing its iterations.
-
-These values travel through the advisor context as `AgentRequestContext`, rather
-than being interpolated into the user prompt. Request and conversation IDs are
-not sent as model messages. The selected mission's data is deliberately sent.
-
-Reusing a conversation ID does not recover previous messages or a previous
-mission selection. That behavior belongs to milestone 8. Unknown selected missions
-return 404 before contacting the model; malformed context fields return 400.
-
-## Inspecting the chain
-
-Enable the `dev` profile to register `DevelopmentLoggingAdvisor` and its DEBUG log.
-It prints names and order values, without raw conversation data:
+The chain is now:
 
 ```text
-DevelopmentLoggingAdvisor
-  → MissionContextAdvisor
-    → ToolCallingAdvisor
-      → AgentIterationLogger
-        → model call
+DevelopmentLoggingAdvisor (dev only)
+ → MissionContextAdvisor
+ → MessageChatMemoryAdvisor
+ → ToolCallingAdvisor
+ → AgentIterationLogger
+ → model
 ```
 
-The development advisor surrounds the request once, while the iteration logger
-runs inside the tool loop. Lower order values run first; responses unwind the chain.
-The built-in tool advisor's displayed name is `Tool Calling Advisor`; the terminal
-model advisor is named `call`. No memory or RAG advisor has been registered yet.
+The memory advisor surrounds the whole tool loop. Only user text and final
+assistant text are retained. Application snapshots, system messages, tool requests
+and tool results are excluded. Each request still gets fresh application context.
+
+ConversationMemory serializes turns sharing an ID and restores prior history if
+the turn fails. This matters because the standard advisor saves the user message
+before the model responds. Otherwise a failed call could leave an incomplete turn.
+
+## Memory is not the simulator
+
+The window retains at most 20 user/assistant messages, usually 10 turns. Older
+messages are evicted, so old references can be forgotten. Twenty messages is not
+twenty tokens, nor does it bound the complete model prompt.
+
+Past answers can mention telemetry, but they are historical conversation, not
+authoritative state. The agent must read tools again for current battery, weather
+and mission status. Explicit mission selection remains request-local.
+
+Chat memory provides recent dialogue. RAG retrieves relevant external knowledge.
+Application state holds drones and missions. The model context window limits the
+total input the provider can process. These are different responsibilities.
 
 ## Demonstration through Swagger UI
 
-Start with OpenAI configured:
+Start the application with OpenAI configured; use the dev profile to see the chain:
 
 ```bash
 ./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
 ```
 
-1. Open `http://localhost:8080/swagger-ui/index.html`. Under **Simulation**, execute
-   `POST /api/simulation/reset`, then create a mission with
-   `POST /api/simulation/missions`:
+Open `http://localhost:8080/swagger-ui/index.html` and reset the simulator using
+**Simulation → POST /api/simulation/reset**. For a repeatable demonstration, clear
+both IDs below with **Conversation memory → DELETE …/messages**.
 
-   ```json
-   {"droneId":"alpha","type":"INSPECTION","targetSector":"SECTOR_B","returnHome":true}
-   ```
-
-2. Copy the returned mission ID. Under **World agent**, use **Try it out** on
-   `POST /api/agent/chat`. Replace the entire body and paste that ID:
+1. Under **World agent → POST /api/agent/chat**, use **Try it out** and execute:
 
    ```json
    {
-     "message": "Summarize the selected mission and check Alpha's current status.",
      "conversationId": "4ea95657-b281-4330-97c4-9894249bb992",
-     "missionId": "<paste the returned mission ID>"
+     "message": "We are monitoring Alpha."
    }
    ```
 
-3. Execute the request. The response should describe the selected inspection
-   mission and return the same conversation ID. The console shows the advisor
-   chain once and a separate iteration entry for each model call.
-4. Repeat with the same conversation ID, omit `missionId`, and ask
-   “Is a current mission selected in this request?” No mission should be selected.
-   This demonstrates that correlation is separate from memory.
-5. Select the mission again after resetting the simulator. Expect HTTP 404 and no
-   model invocation for that request. Mission IDs are not reused by reset.
+2. Start conversation B using a different UUID:
 
-Tests verify that enrichment happens once across tool rounds, options remain
-intact, mission snapshots refresh between requests, concurrent selections stay
-separate and development logs omit payloads. HTTP tests use a local provider stub;
-live model wording and tool selection can vary.
+   ```json
+   {
+     "conversationId": "c8b10f35-6095-4051-8dba-302ae5c13597",
+     "message": "We are monitoring Charlie."
+   }
+   ```
 
-The lesson: advisors compose behavior around model calls. Their order determines
-whether that behavior applies once to the request or repeatedly inside the loop.
+3. Send “How much battery does it have?” to each ID. The expected subjects are
+   Alpha in A (82% initially) and Charlie in B (67%). The live model chooses the
+   tools and wording; compare its answer with the Simulation endpoints.
+4. Inject an event through **POST /api/simulation/events**:
+
+   ```json
+   {"type":"BATTERY_DROP","droneId":"alpha","amount":20}
+   ```
+
+   Ask the same follow-up in A. The current answer should be 62%, demonstrating
+   remembered identity with fresh telemetry.
+5. Under **Conversation memory → GET …/messages**, inspect each UUID. Expect only
+   user/assistant role-content pairs, without raw tool data or application snapshots.
+6. Delete A's messages. Its GET now returns an empty list; B's history remains.
+   If you ask the ambiguous battery question in A again, the agent should request
+   a drone identifier. Resetting the simulator alone would not erase this history.
+

@@ -29,7 +29,7 @@ public class MissionContextAdvisor implements CallAdvisor {
     public String getName() { return "MissionContextAdvisor"; }
 
     @Override
-    public int getOrder() { return ToolCallingAdvisor.DEFAULT_ORDER - 1; }
+    public int getOrder() { return ToolCallingAdvisor.DEFAULT_ORDER - 2; }
 
     @Override
     public ChatClientResponse adviseCall(ChatClientRequest request, CallAdvisorChain chain) {

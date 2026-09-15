@@ -160,7 +160,7 @@ class AiDroneMissionCommanderApplicationTests {
                 .andExpect(jsonPath("$.components.schemas.ChatRequest.properties.message.type").value("string"))
                 .andReturn();
         JsonNode spec = objectMapper.readTree(result.getResponse().getContentAsString());
-        assertThat(spec.path("paths").size()).isEqualTo(20);
+        assertThat(spec.path("paths").size()).isEqualTo(21);
         assertThat(spec.at("/components/schemas/AgentChatRequest/properties/conversationId/format").asText())
                 .isEqualTo("uuid");
         assertThat(spec.at("/components/schemas/AgentChatRequest/properties/missionId/type").asText())
@@ -486,6 +486,69 @@ class AiDroneMissionCommanderApplicationTests {
         var call = calls.addObject();
         call.put("id", "call-" + calls.size()).put("type", "function");
         call.putObject("function").put("name", name).put("arguments", arguments);
+    }
+
+    @Test
+    void conversationsKeepReferencesSeparateAndReadFreshTelemetryThroughTools() throws Exception {
+        var world = context.getBean(pl.stalostech.ai_drone_mission_commander.simulation.DroneWorld.class);
+        world.reset();
+        var alpha = java.util.UUID.randomUUID();
+        var charlie = java.util.UUID.randomUUID();
+        memoryChat(alpha, "We are monitoring Alpha.");
+        REQUESTS.poll(2, TimeUnit.SECONDS);
+        memoryChat(charlie, "We are monitoring Charlie.");
+        REQUESTS.poll(2, TimeUnit.SECONDS);
+        context.getBean(pl.stalostech.ai_drone_mission_commander.simulation.SimulationEventService.class)
+                .inject(pl.stalostech.ai_drone_mission_commander.domain.SimulationEventType.BATTERY_DROP, "alpha", 20);
+        var calls = objectMapper.createArrayNode();
+        addToolCall(calls, "getDroneStatus", "{\"droneId\":\"alpha\"}");
+        setToolResponse(calls);
+        memoryChat(alpha, "How much battery does it have?");
+        var sent = REQUESTS.poll(2, TimeUnit.SECONDS).body();
+        assertThat(sent).contains("We are monitoring Alpha.").doesNotContain("We are monitoring Charlie.");
+        var withTools = objectMapper.readTree(REQUESTS.poll(2, TimeUnit.SECONDS).body());
+        var toolResult = java.util.stream.StreamSupport.stream(withTools.path("messages").spliterator(), false)
+                .filter(message -> message.path("role").asText().equals("tool")).findFirst().orElseThrow();
+        assertThat(objectMapper.readTree(toolResult.path("content").asText()).path("batteryPercent").asInt()).isEqualTo(62);
+        memoryChat(charlie, "How much battery does it have?");
+        assertThat(REQUESTS.poll(2, TimeUnit.SECONDS).body())
+                .contains("We are monitoring Charlie.").doesNotContain("We are monitoring Alpha.");
+        var stored = mvc.perform(get("/api/agent/conversations/{id}/messages", alpha))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(4))
+                .andExpect(jsonPath("$[0].role").value("user"))
+                .andExpect(jsonPath("$[1].role").value("assistant")).andReturn();
+        assertThat(stored.getResponse().getContentAsString()).doesNotContain("APPLICATION CONTEXT", "batteryPercent", "tool_calls");
+        world.reset();
+        mvc.perform(get("/api/agent/conversations/{id}/messages", alpha))
+                .andExpect(jsonPath("$.length()").value(4));
+        var before = world.snapshot();
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .delete("/api/agent/conversations/{id}/messages", alpha)).andExpect(status().isNoContent());
+        mvc.perform(get("/api/agent/conversations/{id}/messages", alpha)).andExpect(jsonPath("$.length()").value(0));
+        mvc.perform(get("/api/agent/conversations/{id}/messages", charlie)).andExpect(jsonPath("$.length()").value(4));
+        assertThat(world.snapshot()).isEqualTo(before);
+        assertThat(REQUESTS).isEmpty();
+    }
+
+    @Test
+    void failedProviderTurnDoesNotChangeStoredHistory() throws Exception {
+        var id = java.util.UUID.randomUUID();
+        memoryChat(id, "Monitor Alpha");
+        REQUESTS.poll(2, TimeUnit.SECONDS);
+        PROVIDER_STATUS.set(503);
+        RESPONSE.set("{\"error\":{\"message\":\"Unavailable\",\"type\":\"server_error\"}}");
+        mvc.perform(post("/api/agent/chat").contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(java.util.Map.of("message", "Failed question", "conversationId", id))))
+                .andExpect(status().isServiceUnavailable());
+        mvc.perform(get("/api/agent/conversations/{id}/messages", id))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(2))
+                .andExpect(jsonPath("$[0].content").value("Monitor Alpha"));
+    }
+
+    private void memoryChat(java.util.UUID id, String message) throws Exception {
+        mvc.perform(post("/api/agent/chat").contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(java.util.Map.of("message", message, "conversationId", id))))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.conversationId").value(id.toString()));
     }
 
     @Test

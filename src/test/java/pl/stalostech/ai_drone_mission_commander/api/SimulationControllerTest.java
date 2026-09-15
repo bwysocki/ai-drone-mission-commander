@@ -48,6 +48,8 @@ class SimulationControllerTest {
         assertThat(paths.has("/api/chat")).isFalse();
         assertThat(paths.has("/api/agent/chat")).isFalse();
         assertThat(paths.has("/api/agent/tools")).isFalse();
+        assertThat(paths.has("/api/agent/conversations/{conversationId}/messages")).isFalse();
+        assertThat(context.getBeansOfType(pl.stalostech.ai_drone_mission_commander.memory.ConversationMemory.class)).isEmpty();
         mvc.perform(get("/swagger-ui/index.html")).andExpect(status().isOk());
     }
 

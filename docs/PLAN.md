@@ -645,13 +645,13 @@ Understand conversation memory and how it differs from application state.
 
 ### Tasks
 
-* [ ] Add `ChatMemory`
-* [ ] Add a memory advisor
-* [ ] Use conversation IDs
-* [ ] Test isolated conversations
-* [ ] Inspect stored messages
-* [ ] Understand memory window behavior
-* [ ] Add integration tests
+* [x] Add `ChatMemory`
+* [x] Add a memory advisor
+* [x] Use conversation IDs
+* [x] Test isolated conversations
+* [x] Inspect stored messages
+* [x] Understand memory window behavior
+* [x] Add integration tests
 
 ### Scenario
 

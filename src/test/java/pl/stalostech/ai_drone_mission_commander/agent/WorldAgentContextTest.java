@@ -44,7 +44,7 @@ class WorldAgentContextTest {
     private WorldAgentService service(boolean dev) throws Exception {
         when(model.getOptions()).thenReturn(OpenAiChatOptions.builder().model("test-model").maxCompletionTokens(2048).build());
         return new WorldAgentService(ChatClient.builder(model), tools, new ClassPathResource("prompts/world-agent.st"),
-                new MissionContextAdvisor(world), dev ? List.of(new DevelopmentLoggingAdvisor()) : List.of());
+                new MissionContextAdvisor(world), dev ? List.of(new DevelopmentLoggingAdvisor()) : List.of(), new pl.stalostech.ai_drone_mission_commander.memory.ConversationMemory());
     }
 
     private static ChatResponse answer() {
@@ -103,8 +103,8 @@ class WorldAgentContextTest {
         assertThat(context(prompts.getAllValues().get(0))).contains("CREATED");
         assertThat(context(prompts.getAllValues().get(1))).contains("COMPLETED");
         assertThat(context(prompts.getAllValues().get(2))).contains("\"currentMission\":null").doesNotContain(mission.id());
-        assertThat(prompts.getAllValues().get(2).getInstructions()).hasSize(3)
-                .noneMatch(message -> message.getText().contains("first-private-question"));
+        assertThat(prompts.getAllValues().get(2).getInstructions()).hasSize(7)
+                .anyMatch(message -> message.getText().contains("first-private-question"));
         world.reset();
         assertThatThrownBy(() -> service.chat("after reset", null, conversation, mission.id()))
                 .isInstanceOf(SimulationNotFoundException.class);

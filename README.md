@@ -458,7 +458,7 @@ can explain or correct. Unrecoverable tool orchestration failures return HTTP 50
 provider failures retain the existing HTTP 502/503 handling.
 
 Change the world through the Simulation API, then ask again to read the new state.
-Each request is independent: no conversation memory is implemented yet.
+Reuse `conversationId` to include recent messages (milestone 8); omit it for a new conversation.
 Route estimates cover movement only; an inspection consumes 3 additional battery
 points and a patrol 2. Recent alerts are event history, newest first, with a required
 `limit` from 1 to 20. They are not a list of currently active faults.
@@ -499,8 +499,9 @@ cycle exists only in tests; production continues to use Spring AI's automatic lo
 `POST /api/agent/chat` accepts optional `conversationId` (UUID) and `missionId`
 fields in addition to `message` and `options`. Successful replies retain
 `message` and `metadata`, and add `conversationId`; a UUID is generated when omitted.
-The ID correlates requests and logs. It does not store messages or remember the
-selected mission. Supply `missionId` again on each request that needs it.
+The ID correlates requests and logs and, since milestone 8, selects recent conversation
+history. It does not select a mission automatically. Supply `missionId` again on
+each request that needs it.
 
 `MissionContextAdvisor` adds an application context message once, before the tool
 loop: the simulated environment, known drone/sector IDs and the explicitly selected
@@ -534,14 +535,57 @@ IDs. It contains no prompt, answer, tool arguments or mission payload. The chain
 ```text
 DevelopmentLoggingAdvisor (dev only)
   → MissionContextAdvisor
-    → ToolCallingAdvisor
-      → AgentIterationLogger
-        → model call
+    → MessageChatMemoryAdvisor
+      → ToolCallingAdvisor
+        → AgentIterationLogger
+          → model call
 ```
 
 Lower order values run first on the request; responses pass back in reverse.
 The context and development advisors run once per request. The iteration logger
 runs inside the tool loop. In Spring AI's log names, the tool advisor appears as
 `Tool Calling Advisor` and the terminal model advisor as `call`.
-Memory and RAG advisors are not part of this milestone. The standalone `simulator`
-profile keeps AI advisors and endpoints disabled.
+MessageChatMemoryAdvisor was added in milestone 8; RAG remains a later milestone.
+The standalone `simulator` profile keeps AI advisors and endpoints disabled.
+
+## Milestone 8: conversation memory
+
+Only `POST /api/agent/chat` uses conversation memory. Send `conversationId` again
+to continue; if omitted, the returned ID belongs to a new conversation.
+
+```json
+{
+  "conversationId": "4ea95657-b281-4330-97c4-9894249bb992",
+  "message": "We are monitoring Alpha."
+}
+```
+
+Then send `{"conversationId":"4ea95657-b281-4330-97c4-9894249bb992","message":"How much battery does it have?"}`.
+Use a different UUID for a conversation monitoring Charlie.
+
+In Swagger's **Conversation memory** group:
+
+- `GET /api/agent/conversations/{conversationId}/messages` shows stored role/content pairs.
+- `DELETE /api/agent/conversations/{conversationId}/messages` forgets the conversation (204).
+- Unknown or cleared conversation IDs return an empty list. Neither endpoint calls a model.
+
+The Spring AI `MessageChatMemoryAdvisor` loads history before the tool loop and
+stores the user message and final assistant answer. `ConversationMemory` wraps
+`MessageWindowChatMemory`, retaining the latest **20 messages**, usually 10 complete
+turns. This is a message limit, not a token budget: system context, the current
+question and current tool results also contribute to the model's input.
+
+Only conversational text is retained. System instructions, application/mission
+snapshots, assistant tool calls and Tool messages are excluded. Past answers may
+mention old readings; the agent is instructed to call tools again for current facts.
+The simulator is still the source of truth.
+
+Requests sharing an ID are serialized; a failed turn restores the previous history.
+Reading or clearing history waits for an in-flight turn with that ID. Bounded lock
+stripes may also serialize unrelated IDs that collide. Different IDs never share data.
+
+History lives in this application process, has no automatic expiry and is lost on
+restart. The window limits messages per conversation, not the number of conversations.
+This local demo has no authentication; a conversation ID is a lookup key, not access
+control. Resetting the simulator does not clear memory, and clearing memory does not
+reset the simulator. `missionId` still selects current mission context per request.

@@ -9,7 +9,7 @@ public record AgentChatRequest(
                 example = "Summarize the selected mission and check the drone's current status.")
         @JsonDeserialize(using = ChatRequest.MessageDeserializer.class) String message,
         ChatRequestOptions options,
-        @Schema(description = "Optional UUID for correlation. Generated when omitted. Does not enable conversation memory.")
+        @Schema(description = "Optional conversation UUID. Reuse it to load the last 20 user/assistant messages. Omit to start a new conversation.")
         UUID conversationId,
         @Schema(description = "Optional existing mission ID, returned by the Simulation API. Omit to select no mission.")
         @JsonDeserialize(using = ChatRequest.MessageDeserializer.class) String missionId) {}

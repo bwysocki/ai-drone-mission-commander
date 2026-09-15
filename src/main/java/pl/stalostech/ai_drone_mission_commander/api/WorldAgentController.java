@@ -40,7 +40,7 @@ public class WorldAgentController {
             @ApiResponse(responseCode = "503", description = "Provider unavailable or rate limited", content = @Content)
     })
     @Operation(summary = "Ask about the live simulated world",
-            description = "The model may call read-only tools before answering. Includes simulator context and an optional missionId selection. Returns the supplied conversationId or a generated UUID; no conversation memory is stored yet. Uses the configured provider and optional request options. Does not execute or approve missions. Missing selected missions return 404; unrecoverable agent errors return 502 and provider errors 502/503.")
+            description = "The model may call read-only tools before answering. Reuse conversationId to load the last 20 user/assistant messages; omit it for a new conversation. Includes fresh simulator context and an optional missionId selected per request. History is not authoritative telemetry. Does not execute or approve missions. Missing selected missions return 404; unrecoverable agent errors return 502 and provider errors 502/503.")
     public AgentChatReply chat(@RequestBody AgentChatRequest request) {
         ChatRequestMapper.validateMessage(request.message());
         if (request.missionId() != null && request.missionId().isBlank()) {

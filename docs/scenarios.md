@@ -211,7 +211,8 @@ before any tool calls. Tools remain available to verify current facts.
 
 Repeat after completing the mission through the Simulation API: a new request's
 context must reflect COMPLETED. Repeat with the same conversation ID and no
-missionId: context must contain no selected mission and no earlier user messages.
+missionId: context must contain no selected mission. Since milestone 8, earlier
+conversational messages remain available, but earlier application snapshots do not.
 Reset the simulator and try the old missionId: expect 404 without a provider call.
 
 With the dev profile, check that MissionContextAdvisor precedes ToolCallingAdvisor
@@ -220,6 +221,26 @@ per model invocation, with matching request/conversation IDs and no raw payloads
 
 Automated coverage: WorldAgentContextTest checks ordering, one context message per
 round, fresh state, concurrent selections, options and literal text preservation,
-absence of memory, dev-profile activation and sanitized logs.
+explicit mission selection, dev-profile activation and sanitized logs.
 AiDroneMissionCommanderApplicationTests checks the HTTP contract, generated IDs,
 selected mission data sent to the local provider, invalid fields and missing missions.
+
+# Milestone 8 — Isolated dialogue and fresh state
+
+Reset the world and clear two conversation IDs. Send "We are monitoring Alpha."
+in A and "We are monitoring Charlie." in B. Ask "How much battery does it have?"
+in each: expect Alpha (82%) and Charlie (67%) respectively. Inject BATTERY_DROP 20
+for Alpha and repeat in A: expect 62%, read through a tool rather than copied from
+an earlier answer.
+
+Inspect GET /api/agent/conversations/{conversationId}/messages: only user and final
+assistant text should be stored. No system/application context or Tool messages.
+DELETE A's messages must not affect B or simulator state; resetting the world must
+not clear dialogue history. A subsequent ambiguous question in cleared A should
+ask for a drone identifier.
+
+ConversationMemoryTest verifies filtering, the 20-message window, eviction, rollback
+and serialized same-ID turns. AiDroneMissionCommanderApplicationTests verifies
+separate provider request histories, fresh tool data, inspect/delete endpoints and
+provider failure preserving previous history. Live model reference resolution
+remains a manual check; automated model responses are scripted locally.
