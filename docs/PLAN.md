@@ -701,24 +701,24 @@ Understand semantic search before adding RAG.
 
 Create:
 
-* [ ] `battery-policy.md`
-* [ ] `weather-policy.md`
-* [ ] `gps-failure.md`
-* [ ] `mission-procedure.md`
-* [ ] `emergency-procedure.md`
-* [ ] `inspection-procedure.md`
+* [x] `battery-policy.md`
+* [x] `weather-policy.md`
+* [x] `gps-failure.md`
+* [x] `mission-procedure.md`
+* [x] `emergency-procedure.md`
+* [x] `inspection-procedure.md`
 
 ### Tasks
 
-* [ ] Understand embeddings
-* [ ] Configure `EmbeddingModel`
-* [ ] Configure `SimpleVectorStore`
-* [ ] Create `Document` objects
-* [ ] Store documents
-* [ ] Perform `similaritySearch`
-* [ ] Inspect similarity results
-* [ ] Add metadata
-* [ ] Experiment with metadata filters
+* [x] Understand embeddings
+* [x] Configure `EmbeddingModel`
+* [x] Configure `SimpleVectorStore`
+* [x] Create `Document` objects
+* [x] Store documents
+* [x] Perform `similaritySearch`
+* [x] Inspect similarity results
+* [x] Add metadata
+* [x] Experiment with metadata filters
 
 ### Example Metadata
 

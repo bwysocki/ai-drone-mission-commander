@@ -92,6 +92,14 @@ class AiDroneMissionCommanderApplicationTests {
     static void configureLocalProvider(DynamicPropertyRegistry registry) {
         // Override even credentials inherited from the developer's environment.
         registry.add("spring.ai.model.chat", () -> "openai");
+        registry.add("spring.ai.model.embedding", () -> "openai");
+        registry.add("spring.ai.openai.embedding.api-key", () -> "test-only-not-a-real-key");
+        registry.add("spring.ai.openai.embedding.base-url",
+                () -> "http://127.0.0.1:" + PROVIDER.getAddress().getPort() + "/v1");
+        registry.add("spring.ai.openai.embedding.max-retries", () -> 0);
+        registry.add("spring.ai.openai.embedding.timeout", () -> "2s");
+        registry.add("spring.ai.openai.embedding.model", () -> "text-embedding-3-small");
+        registry.add("spring.ai.openai.embedding.encoding-format", () -> "float");
         registry.add("spring.ai.openai.api-key", () -> "test-only-not-a-real-key");
         registry.add("spring.ai.openai.base-url",
                 () -> "http://127.0.0.1:" + PROVIDER.getAddress().getPort() + "/v1");
@@ -160,7 +168,7 @@ class AiDroneMissionCommanderApplicationTests {
                 .andExpect(jsonPath("$.components.schemas.ChatRequest.properties.message.type").value("string"))
                 .andReturn();
         JsonNode spec = objectMapper.readTree(result.getResponse().getContentAsString());
-        assertThat(spec.path("paths").size()).isEqualTo(21);
+        assertThat(spec.path("paths").size()).isEqualTo(24);
         assertThat(spec.at("/components/schemas/AgentChatRequest/properties/conversationId/format").asText())
                 .isEqualTo("uuid");
         assertThat(spec.at("/components/schemas/AgentChatRequest/properties/missionId/type").asText())
@@ -552,6 +560,58 @@ class AiDroneMissionCommanderApplicationTests {
     }
 
     @Test
+    void knowledgeSearchUsesOnlyEmbeddingsAndReturnsDocumentsWithScoresAndMetadata() throws Exception {
+        mvc.perform(get("/api/knowledge/documents")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(6));
+        assertThat(REQUESTS).isEmpty();
+        mvc.perform(post("/api/knowledge/index")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.documentCount").value(6));
+        mvc.perform(post("/api/knowledge/search").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"query\":\"What should I do when energy is running low?\",\"topK\":1,\"similarityThreshold\":0.5,\"type\":\"SAFETY\",\"topic\":\"BATTERY\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].id").value("battery-policy.md"))
+                .andExpect(jsonPath("$[0].score").value(1.0))
+                .andExpect(jsonPath("$[0].metadata.source").value("knowledge/battery-policy.md"));
+        // First use also probes the embedding dimension with "Hello World".
+        assertThat(REQUESTS).hasSize(8);
+        for (var sent : REQUESTS) {
+            assertThat(sent.path()).isEqualTo("/v1/embeddings");
+            assertThat(sent.authorization()).isEqualTo("Bearer test-only-not-a-real-key");
+            assertThat(objectMapper.readTree(sent.body()).path("model").asText()).isEqualTo("text-embedding-3-small");
+        }
+        assertThat(REQUESTS.peek().body()).contains("Hello World");
+        assertThat(REQUESTS).anySatisfy(sent -> assertThat(sent.body()).contains("Battery readiness policy"));
+        REQUESTS.clear();
+        mvc.perform(post("/api/knowledge/search").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"query\":\"low energy\",\"similarityThreshold\":0.5,\"topic\":\"WEATHER\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(0));
+        assertThat(REQUESTS).hasSize(1);
+        PROVIDER_STATUS.set(429);
+        RESPONSE.set("{\"error\":{\"message\":\"private-provider-detail\",\"type\":\"rate_limit_exceeded\"}}");
+        mvc.perform(post("/api/knowledge/index")).andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.title").value("AI provider error"));
+        PROVIDER_STATUS.set(200);
+        mvc.perform(post("/api/knowledge/search").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"query\":\"low energy\",\"topK\":1}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$[0].id").value("battery-policy.md"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "{}", "{\"query\":123}", "{\"query\":\" \"}", "{\"query\":\"x\",\"topK\":0}",
+            "{\"query\":\"x\",\"topK\":7}", "{\"query\":\"x\",\"topK\":1.5}",
+            "{\"query\":\"x\",\"similarityThreshold\":1.1}",
+            "{\"query\":\"x\",\"similarityThreshold\":\"0.5\"}",
+            "{\"query\":\"x\",\"type\":0}", "{\"query\":\"x\",\"topic\":\"UNKNOWN\"}",
+            "{\"query\":\"x\",\"filter\":\"type == 'SAFETY'\"}"
+    })
+    void rejectsInvalidKnowledgeQueriesWithoutProviderCalls(String body) throws Exception {
+        mvc.perform(post("/api/knowledge/search").contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isBadRequest());
+        assertThat(REQUESTS).isEmpty();
+    }
+
+    @Test
     void agentExposesConversationIdAndSendsSelectedMissionContext() throws Exception {
         var world = context.getBean(pl.stalostech.ai_drone_mission_commander.simulation.DroneWorld.class);
         world.reset();
@@ -620,10 +680,11 @@ class AiDroneMissionCommanderApplicationTests {
             HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
             server.createContext("/", exchange -> {
                 try (exchange) {
+                    String requestBody = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
                     REQUESTS.add(new RecordedRequest(exchange.getRequestMethod(),
                             exchange.getRequestURI().getPath(),
                             exchange.getRequestHeaders().getFirst("Authorization"),
-                            new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)));
+                            requestBody));
                     if (PROVIDER_STATUS.get() == -1) {
                         // Simulate a dropped connection, including any SDK retry attempts.
                         return;
@@ -649,7 +710,11 @@ class AiDroneMissionCommanderApplicationTests {
                         return;
                     }
                     String toolResponse = TOOL_RESPONSE.getAndSet(null);
-                    byte[] body = (toolResponse == null ? RESPONSE.get() : toolResponse).getBytes(StandardCharsets.UTF_8);
+                    String response = toolResponse == null ? RESPONSE.get() : toolResponse;
+                    if (exchange.getRequestURI().getPath().endsWith("/embeddings") && PROVIDER_STATUS.get() == 200) {
+                        response = embeddingResponse(requestBody);
+                    }
+                    byte[] body = response.getBytes(StandardCharsets.UTF_8);
                     exchange.getResponseHeaders().set("Content-Type", "application/json");
                     exchange.sendResponseHeaders(PROVIDER_STATUS.get(), body.length);
                     exchange.getResponseBody().write(body);
@@ -661,6 +726,22 @@ class AiDroneMissionCommanderApplicationTests {
         catch (IOException exception) {
             throw new ExceptionInInitializerError(exception);
         }
+    }
+
+    // Scripted vectors test the real SDK/store plumbing, not a model's semantic quality.
+    private static String embeddingResponse(String requestBody) {
+        var json = new tools.jackson.databind.json.JsonMapper();
+        var input = json.readTree(requestBody).path("input");
+        String text = input.isArray() ? input.get(0).asText() : input.asText();
+        int topic = text.contains("# Weather") ? 1 : text.contains("# GPS") ? 2
+                : text.contains("# Mission") ? 3 : text.contains("# Fault") ? 4
+                : text.contains("# Sector") ? 5 : 0;
+        var response = json.createObjectNode().put("object", "list").put("model", "text-embedding-3-small");
+        var item = response.putArray("data").addObject().put("object", "embedding").put("index", 0);
+        var vector = item.putArray("embedding");
+        for (int i = 0; i < 6; i++) vector.add(i == topic ? 1.0 : 0.0);
+        response.putObject("usage").put("prompt_tokens", 10).put("total_tokens", 10);
+        return json.writeValueAsString(response);
     }
 
     private record Message(String message) {

@@ -589,3 +589,47 @@ restart. The window limits messages per conversation, not the number of conversa
 This local demo has no authentication; a conversation ID is a lookup key, not access
 control. Resetting the simulator does not clear memory, and clearing memory does not
 reset the simulator. `missionId` still selects current mission context per request.
+
+## Milestone 9: embeddings and semantic search
+
+Run the normal application with the OpenAI credentials described above and open
+Swagger UI. In **Knowledge search**, try:
+
+1. `GET /api/knowledge/documents`: inspect six bundled procedures and their metadata.
+   This operation does not call a provider.
+2. `POST /api/knowledge/index`: embed the documents and build a `SimpleVectorStore`
+   in memory. The response is `{"documentCount":6}`.
+3. `POST /api/knowledge/search`:
+
+```json
+{
+  "query": "What should I do when energy is running low?",
+  "topK": 3,
+  "similarityThreshold": 0.0
+}
+```
+
+The result contains document IDs, full text, metadata and similarity scores.
+Try adding `"type":"SAFETY"` and `"topic":"BATTERY"` to restrict results.
+The filters use AND. Types are `SAFETY` and `PROCEDURE`; topics are `BATTERY`,
+`WEATHER`, `GPS`, `MISSION`, `EMERGENCY` and `INSPECTION`.
+`topK` defaults to 3 (range 1–6); `similarityThreshold` defaults to 0 (range 0–1).
+A score expresses cosine similarity, not the probability that a procedure is safe.
+A higher threshold can produce an empty result.
+
+Indexing and searching call the embedding provider and may incur charges; they do
+not call a chat model. The embedding model is `text-embedding-3-small`, configured
+separately from the chat model through `spring.ai.openai.embedding.model`.
+Spring AI also makes an initial embedding request to discover vector dimensions.
+Application startup does not build the index or call the embedding provider.
+
+Search before indexing returns 409. Restarting loses the index. Reindexing replaces
+it only after all documents have been embedded successfully; failure preserves the
+previous index. Documents use stable filename IDs, so rebuilding does not accumulate
+duplicates. Invalid input returns 400 and provider failures use the existing sanitized
+502/503 responses. These endpoints are disabled in the `simulator` profile.
+
+Each Markdown file in `src/main/resources/knowledge` is one `Document` with `source`,
+`title`, `type` and `topic` metadata. Document splitting and an ETL pipeline belong to
+milestone 10; using retrieved content in an agent answer belongs to milestone 11.
+These fictional simulator procedures do not authorize mission execution.

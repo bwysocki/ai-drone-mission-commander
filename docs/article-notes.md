@@ -1,103 +1,120 @@
-# Milestone 8 — Chat Memory
+# Milestone 9 — Embeddings and Vector Store
 
-Until now, conversation IDs only correlated requests. Now the agent can interpret
-a follow-up such as “How much battery does it have?” using an earlier message:
-“We are monitoring Alpha.”
+Conversation memory preserves a dialogue. It does not provide a searchable library
+of operational procedures. This milestone adds that library and explores retrieval
+before connecting it to the agent.
 
-## Add memory before the tool loop
+An embedding represents text as a numerical vector. Documents and queries use the
+same embedding model so that their vectors can be compared in the same space.
+A query such as “What should I do when energy is running low?” can retrieve battery
+guidance even without repeating the document's wording. This is a capability to
+check with the real model; our automated tests use predictable synthetic vectors.
 
-The application uses Spring AI's MessageChatMemoryAdvisor with ConversationMemory,
-a small wrapper around MessageWindowChatMemory:
+## Build the index explicitly
+
+The six short Markdown files cover battery, weather, GPS, mission preparation,
+fault escalation and inspection. KnowledgeCatalog loads each complete file as one
+Spring AI Document with a stable filename ID and descriptive metadata:
 
 ```java
-builder.defaultAdvisors(MessageChatMemoryAdvisor.builder(memory)
-        .order(ToolCallingAdvisor.DEFAULT_ORDER - 1).build());
+new Document(fileName, text, Map.of(
+        "source", "knowledge/" + fileName,
+        "title", title,
+        "type", type.name(),
+        "topic", topic.name()));
 ```
 
-Every request passes its UUID through the standard advisor parameter:
+Spring Boot configures the EmbeddingModel using:
+
+```properties
+spring.ai.openai.embedding.model=text-embedding-3-small
+spring.ai.openai.embedding.encoding-format=float
+```
+
+KnowledgeSearchService builds the actual Spring AI store:
 
 ```java
-.advisors(spec -> spec.param(AgentRequestContext.KEY, context)
-        .param(ChatMemory.CONVERSATION_ID, conversationId.toString()))
+var documents = catalog.documents();
+var candidate = SimpleVectorStore.builder(embeddingModel).build();
+candidate.add(documents);
+index = candidate;
 ```
 
-The chain is now:
+Building happens only through POST /api/knowledge/index. The service publishes the
+new index after every embedding succeeds, so a failed rebuild keeps the previous
+index usable. No partially loaded index becomes visible. This store is in memory
+and is lost when the application restarts.
 
-```text
-DevelopmentLoggingAdvisor (dev only)
- → MissionContextAdvisor
- → MessageChatMemoryAdvisor
- → ToolCallingAdvisor
- → AgentIterationLogger
- → model
+## Retrieve documents without generating an answer
+
+The central API is similaritySearch:
+
+```java
+var request = SearchRequest.builder()
+        .query(query)
+        .topK(topK)
+        .similarityThreshold(threshold);
+var filters = new FilterExpressionBuilder();
+request.filterExpression(filters.and(
+        filters.eq("type", "SAFETY"),
+        filters.eq("topic", "BATTERY")).build());
+var documents = current.similaritySearch(request.build());
 ```
 
-The memory advisor surrounds the whole tool loop. Only user text and final
-assistant text are retained. Application snapshots, system messages, tool requests
-and tool results are excluded. Each request still gets fresh application context.
+In the endpoint both filters are optional; when present together they use AND.
+Filtering is a metadata constraint, while ranking compares embedding vectors.
+The result exposes original text, metadata and a cosine similarity score. It is
+not an assistant answer, a confidence probability, or mission approval.
 
-ConversationMemory serializes turns sharing an ID and restores prior history if
-the turn fails. This matters because the standard advisor saves the user message
-before the model responds. Otherwise a failed call could leave an incomplete turn.
+## Demonstrate this milestone in Swagger UI
 
-## Memory is not the simulator
+Use the normal application profile with valid OpenAI credentials and expand
+**Knowledge search**:
 
-The window retains at most 20 user/assistant messages, usually 10 turns. Older
-messages are evicted, so old references can be forgotten. Twenty messages is not
-twenty tokens, nor does it bound the complete model prompt.
+1. Execute GET /api/knowledge/documents. Show the six documents and the metadata
+   on battery-policy.md. This call needs no embedding request.
+2. Before the first index build, execute POST /api/knowledge/search with
+   {"query":"What should I do when energy is running low?"}. Explain the 409:
+   there is no index yet.
+3. Execute POST /api/knowledge/index and show documentCount: 6.
+4. Execute POST /api/knowledge/search with this body:
 
-Past answers can mention telemetry, but they are historical conversation, not
-authoritative state. The agent must read tools again for current battery, weather
-and mission status. Explicit mission selection remains request-local.
-
-Chat memory provides recent dialogue. RAG retrieves relevant external knowledge.
-Application state holds drones and missions. The model context window limits the
-total input the provider can process. These are different responsibilities.
-
-## Demonstration through Swagger UI
-
-Start the application with OpenAI configured; use the dev profile to see the chain:
-
-```bash
-./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
+```json
+{
+  "query": "What should I do when energy is running low?",
+  "topK": 3,
+  "similarityThreshold": 0.0
+}
 ```
 
-Open `http://localhost:8080/swagger-ui/index.html` and reset the simulator using
-**Simulation → POST /api/simulation/reset**. For a repeatable demonstration, clear
-both IDs below with **Conversation memory → DELETE …/messages**.
+Inspect the returned text, source and score. Battery guidance should be relevant;
+exact scores and ordering depend on the real embedding model. Try a second query:
+“The drone can no longer determine its position.” Compare the GPS procedure.
 
-1. Under **World agent → POST /api/agent/chat**, use **Try it out** and execute:
+5. Repeat the energy query with type SAFETY and topic BATTERY. Only matching
+   metadata may appear. Change type to PROCEDURE while keeping topic BATTERY:
+   the result is empty because no document has that combination.
+6. Remove the filters and increase similarityThreshold. Explain that fewer than
+   topK results, including zero results, is valid.
 
-   ```json
-   {
-     "conversationId": "4ea95657-b281-4330-97c4-9894249bb992",
-     "message": "We are monitoring Alpha."
-   }
-   ```
+Indexing and searching use the paid embedding API, but no chat completion. Spring
+AI may additionally embed “Hello World” on first use to discover vector dimensions.
+That extra call was visible in the integration test. Listing documents and starting
+the application make no embedding calls.
 
-2. Start conversation B using a different UUID:
+## What I learned
 
-   ```json
-   {
-     "conversationId": "c8b10f35-6095-4051-8dba-302ae5c13597",
-     "message": "We are monitoring Charlie."
-   }
-   ```
+SimpleVectorStore makes the retrieval mechanics visible without a database: create
+Documents, embed them, then embed the question and compare vectors. Metadata adds
+precise restrictions alongside semantic ranking. Changing the embedding model
+requires rebuilding the index; vectors from different models must not be mixed.
 
-3. Send “How much battery does it have?” to each ID. The expected subjects are
-   Alpha in A (82% initially) and Charlie in B (67%). The live model chooses the
-   tools and wording; compare its answer with the Simulation endpoints.
-4. Inject an event through **POST /api/simulation/events**:
+Tests use the real SimpleVectorStore with synthetic embeddings to verify ranking,
+thresholds, filters and atomic replacement. A local HTTP provider stub verifies the
+real OpenAI embedding client and REST path with dummy credentials, including a
+provider failure during rebuilding. It checks that retrieval never calls the chat
+endpoint. These tests verify integration mechanics, not live semantic quality.
 
-   ```json
-   {"type":"BATTERY_DROP","droneId":"alpha","amount":20}
-   ```
-
-   Ask the same follow-up in A. The current answer should be 62%, demonstrating
-   remembered identity with fresh telemetry.
-5. Under **Conversation memory → GET …/messages**, inspect each UUID. Expect only
-   user/assistant role-content pairs, without raw tool data or application snapshots.
-6. Delete A's messages. Its GET now returns an empty list; B's history remains.
-   If you ask the ambiguous battery question in A again, the agent should request
-   a drone identifier. Resetting the simulator alone would not erase this history.
-
+Each file remains a single document. ETL and splitting come next; RAG will later
+place retrieved text into the agent's prompt. Deterministic mission safety remains
+Java's responsibility.

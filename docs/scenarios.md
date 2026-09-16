@@ -244,3 +244,24 @@ and serialized same-ID turns. AiDroneMissionCommanderApplicationTests verifies
 separate provider request histories, fresh tool data, inspect/delete endpoints and
 provider failure preserving previous history. Live model reference resolution
 remains a manual check; automated model responses are scripted locally.
+
+# Milestone 9 — Retrieve procedures without chat
+
+In the normal profile, list GET /api/knowledge/documents and verify the six bundled
+procedures with source, title, type and topic. Search before indexing should return
+409. Build POST /api/knowledge/index, then search through POST /api/knowledge/search:
+
+- “What should I do when energy is running low?”: inspect battery guidance.
+- “The drone can no longer determine its position”: inspect GPS guidance.
+- Add type SAFETY and topic BATTERY: only the battery document can match.
+- Set type PROCEDURE with topic BATTERY: no document matches both constraints.
+- Increase similarityThreshold: fewer than topK matches is valid.
+
+Live semantic relevance is a manual check; exact scores and ranking are not fixed.
+KnowledgeSearchServiceTest uses synthetic vectors with the real SimpleVectorStore
+for deterministic ranking, thresholds, filters, validation and rebuild rollback.
+AiDroneMissionCommanderApplicationTests uses a local HTTP provider with dummy keys
+to verify the actual embedding client, scored REST results, input rejection and a
+429 during rebuilding preserving the previous index. Every provider request in this
+flow targets /v1/embeddings, never chat completions. Retrieval does not affect the
+simulator, conversation memory or mission approval.
