@@ -8,7 +8,6 @@ import org.springframework.ai.vectorstore.SimpleVectorStore;
 import org.springframework.ai.vectorstore.filter.FilterExpressionBuilder;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
-import pl.stalostech.ai_drone_mission_commander.rag.exception.KnowledgeIndexNotReadyException;
 import pl.stalostech.ai_drone_mission_commander.rag.exception.InvalidKnowledgeQueryException;
 
 @Service
@@ -16,21 +15,37 @@ import pl.stalostech.ai_drone_mission_commander.rag.exception.InvalidKnowledgeQu
 public class KnowledgeSearchService {
     private final KnowledgeCatalog catalog;
     private final EmbeddingModel embeddingModel;
-    private volatile SimpleVectorStore index;
+    private final KnowledgePipeline pipeline;
+    private volatile IndexSnapshot index;
 
-    public KnowledgeSearchService(KnowledgeCatalog catalog, EmbeddingModel embeddingModel) {
+    public KnowledgeSearchService(KnowledgeCatalog catalog, EmbeddingModel embeddingModel, KnowledgePipeline pipeline) {
         this.catalog = catalog;
         this.embeddingModel = embeddingModel;
+        this.pipeline = pipeline;
     }
 
-    /** Explicit rebuild. Publish only after every document was embedded successfully. */
-    public synchronized int index() {
+    /** Serialize ingestion and atomically publish the complete index with its fingerprint. */
+    public synchronized KnowledgeIngestionResult index(boolean force) {
         var documents = catalog.documents();
+        var chunks = pipeline.apply(documents);
+        String fingerprint = pipeline.fingerprint(chunks);
+        if (!force && index != null && index.fingerprint().equals(fingerprint)) {
+            return new KnowledgeIngestionResult(documents.size(), chunks.size(), false);
+        }
         var candidate = SimpleVectorStore.builder(embeddingModel).build();
-        candidate.add(documents);
-        index = candidate;
-        return documents.size();
+        candidate.write(chunks);
+        index = new IndexSnapshot(candidate, fingerprint);
+        return new KnowledgeIngestionResult(documents.size(), chunks.size(), true);
     }
+
+    private synchronized IndexSnapshot ensureIndex() {
+        if (index == null) index(false);
+        return index;
+    }
+
+    public List<Document> chunks() { return pipeline.apply(catalog.documents()); }
+
+    private record IndexSnapshot(SimpleVectorStore store, String fingerprint) {}
 
     public List<Document> search(String query, int topK, double threshold, KnowledgeType type, KnowledgeTopic topic) {
         if (query == null || query.isBlank() || query.length() > 2000) {
@@ -41,7 +56,7 @@ public class KnowledgeSearchService {
             throw new InvalidKnowledgeQueryException("similarityThreshold must be between 0 and 1");
         }
         var current = index;
-        if (current == null) throw new KnowledgeIndexNotReadyException();
+        if (current == null) current = ensureIndex();
         var request = SearchRequest.builder().query(query).topK(topK).similarityThreshold(threshold);
         var filters = new FilterExpressionBuilder();
         FilterExpressionBuilder.Op filter = null;
@@ -51,6 +66,6 @@ public class KnowledgeSearchService {
             filter = filter == null ? byTopic : filters.and(filter, byTopic);
         }
         if (filter != null) request.filterExpression(filter.build());
-        return current.similaritySearch(request.build());
+        return current.store().similaritySearch(request.build());
     }
 }

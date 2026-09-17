@@ -741,13 +741,13 @@ Build a repeatable knowledge ingestion pipeline.
 
 ### Tasks
 
-* [ ] Use a document reader
-* [ ] Split documents into chunks
-* [ ] Add metadata
-* [ ] Transform documents
-* [ ] Write documents into the vector store
-* [ ] Make ingestion repeatable
-* [ ] Prevent unnecessary duplicate ingestion
+* [x] Use a document reader
+* [x] Split documents into chunks
+* [x] Add metadata
+* [x] Transform documents
+* [x] Write documents into the vector store
+* [x] Make ingestion repeatable
+* [x] Prevent unnecessary duplicate ingestion
 
 ### Pipeline
 

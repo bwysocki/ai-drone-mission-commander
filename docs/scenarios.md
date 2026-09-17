@@ -248,8 +248,8 @@ remains a manual check; automated model responses are scripted locally.
 # Milestone 9 — Retrieve procedures without chat
 
 In the normal profile, list GET /api/knowledge/documents and verify the six bundled
-procedures with source, title, type and topic. Search before indexing should return
-409. Build POST /api/knowledge/index, then search through POST /api/knowledge/search:
+procedures with source, title, type and topic. Since milestone 10, the first search automatically ingests the corpus. Search
+through POST /api/knowledge/search (or explicitly build POST /api/knowledge/index):
 
 - “What should I do when energy is running low?”: inspect battery guidance.
 - “The drone can no longer determine its position”: inspect GPS guidance.
@@ -265,3 +265,20 @@ to verify the actual embedding client, scored REST results, input rejection and 
 429 during rebuilding preserving the previous index. Every provider request in this
 flow targets /v1/embeddings, never chat completions. Retrieval does not affect the
 simulator, conversation memory or mission approval.
+
+# Milestone 10 — Repeatable ETL and automatic loading
+
+In Swagger, compare GET /api/knowledge/documents with GET /api/knowledge/chunks.
+Both are local previews with no provider calls. Inspect parent documentId, source,
+chunkIndex, chunkCount and stable chunk IDs. First search should ingest and retrieve
+chunks automatically, without a preliminary /index request. Repeat POST /index:
+updated=false and no embedding requests. Use force=true to rebuild deliberately.
+
+KnowledgeSearchServiceTest checks deterministic IDs, retained source text (including
+short final chunks), normalized line endings, inherited metadata and fingerprinting.
+A temporary resource corpus exercises changed files: successful ingestion removes
+obsolete chunks; failure preserves the old snapshot and permits retry. Concurrent
+first searches embed the corpus once; searches during rebuilding use the old index.
+The HTTP integration test covers preview, lazy ingestion, skipped repeated ingestion,
+forced rebuild failure, provider error mapping and retrieval of chunk metadata.
+Live semantic quality remains a manual check with the real embedding model.

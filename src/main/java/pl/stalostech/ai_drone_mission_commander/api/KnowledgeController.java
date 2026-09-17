@@ -27,12 +27,19 @@ public class KnowledgeController {
     @Operation(summary = "Inspect the six bundled documents", description = "Text and metadata; no provider call. score is null before retrieval.")
     public List<KnowledgeDocument> documents() { return catalog.documents().stream().map(KnowledgeController::reply).toList(); }
 
+    @GetMapping("/chunks")
+    @Operation(summary = "Preview transformed chunks", description = "Shows deterministic IDs and inherited metadata without embedding calls.")
+    public List<KnowledgeDocument> chunks() { return search.chunks().stream().map(KnowledgeController::reply).toList(); }
+
     @PostMapping("/index")
-    @Operation(summary = "Build or replace the in-memory index", description = "Embeds all six documents using the configured embedding model. May incur provider charges. An unsuccessful rebuild preserves the previous index. Restart loses the index.")
-    public KnowledgeIndexReply index() { return new KnowledgeIndexReply(search.index()); }
+    @Operation(summary = "Build or replace the in-memory index", description = "Reads and splits the six documents. Unchanged content is skipped unless force=true. Changed content replaces the entire index. May incur provider charges. An unsuccessful rebuild preserves the previous index. Restart loses the index.")
+    public KnowledgeIndexReply index(@RequestParam(defaultValue = "false") boolean force) {
+        var result = search.index(force);
+        return new KnowledgeIndexReply(result.documentCount(), result.chunkCount(), result.updated());
+    }
 
     @PostMapping("/search")
-    @Operation(summary = "Find relevant procedures", description = "Embeds the query and returns scored documents, without generating an answer. Optional type/topic filters are combined with AND. Requires indexing first (409); invalid input returns 400; provider errors return 502/503.")
+    @Operation(summary = "Find relevant procedures", description = "Embeds the query and returns scored documents, without generating an answer. Optional type/topic filters are combined with AND. Automatically ingests on first search; invalid input returns 400; provider errors return 502/503.")
     public List<KnowledgeDocument> search(@RequestBody KnowledgeSearchRequest request) {
         return search.search(request.query(), request.topK() == null ? 3 : request.topK(),
                 request.similarityThreshold() == null ? 0 : request.similarityThreshold(), request.type(), request.topic())

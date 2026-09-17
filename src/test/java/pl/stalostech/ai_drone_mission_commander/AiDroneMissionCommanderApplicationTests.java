@@ -168,7 +168,7 @@ class AiDroneMissionCommanderApplicationTests {
                 .andExpect(jsonPath("$.components.schemas.ChatRequest.properties.message.type").value("string"))
                 .andReturn();
         JsonNode spec = objectMapper.readTree(result.getResponse().getContentAsString());
-        assertThat(spec.path("paths").size()).isEqualTo(24);
+        assertThat(spec.path("paths").size()).isEqualTo(25);
         assertThat(spec.at("/components/schemas/AgentChatRequest/properties/conversationId/format").asText())
                 .isEqualTo("uuid");
         assertThat(spec.at("/components/schemas/AgentChatRequest/properties/missionId/type").asText())
@@ -564,16 +564,18 @@ class AiDroneMissionCommanderApplicationTests {
         mvc.perform(get("/api/knowledge/documents")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(6));
         assertThat(REQUESTS).isEmpty();
-        mvc.perform(post("/api/knowledge/index")).andExpect(status().isOk())
-                .andExpect(jsonPath("$.documentCount").value(6));
+        var preview = mvc.perform(get("/api/knowledge/chunks")).andExpect(status().isOk()).andReturn();
+        int chunks = objectMapper.readTree(preview.getResponse().getContentAsString()).size();
+        assertThat(chunks).isGreaterThan(6);
+        assertThat(REQUESTS).isEmpty();
         mvc.perform(post("/api/knowledge/search").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"query\":\"What should I do when energy is running low?\",\"topK\":1,\"similarityThreshold\":0.5,\"type\":\"SAFETY\",\"topic\":\"BATTERY\"}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(1))
-                .andExpect(jsonPath("$[0].id").value("battery-policy.md"))
+                .andExpect(jsonPath("$[0].metadata.documentId").value("battery-policy.md"))
                 .andExpect(jsonPath("$[0].score").value(1.0))
                 .andExpect(jsonPath("$[0].metadata.source").value("knowledge/battery-policy.md"));
         // First use also probes the embedding dimension with "Hello World".
-        assertThat(REQUESTS).hasSize(8);
+        assertThat(REQUESTS).hasSize(chunks + 2);
         for (var sent : REQUESTS) {
             assertThat(sent.path()).isEqualTo("/v1/embeddings");
             assertThat(sent.authorization()).isEqualTo("Bearer test-only-not-a-real-key");
@@ -582,18 +584,23 @@ class AiDroneMissionCommanderApplicationTests {
         assertThat(REQUESTS.peek().body()).contains("Hello World");
         assertThat(REQUESTS).anySatisfy(sent -> assertThat(sent.body()).contains("Battery readiness policy"));
         REQUESTS.clear();
+        mvc.perform(post("/api/knowledge/index")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.documentCount").value(6))
+                .andExpect(jsonPath("$.chunkCount").value(chunks))
+                .andExpect(jsonPath("$.updated").value(false));
+        assertThat(REQUESTS).isEmpty();
         mvc.perform(post("/api/knowledge/search").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"query\":\"low energy\",\"similarityThreshold\":0.5,\"topic\":\"WEATHER\"}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(0));
         assertThat(REQUESTS).hasSize(1);
         PROVIDER_STATUS.set(429);
         RESPONSE.set("{\"error\":{\"message\":\"private-provider-detail\",\"type\":\"rate_limit_exceeded\"}}");
-        mvc.perform(post("/api/knowledge/index")).andExpect(status().isServiceUnavailable())
+        mvc.perform(post("/api/knowledge/index").param("force", "true")).andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.title").value("AI provider error"));
         PROVIDER_STATUS.set(200);
         mvc.perform(post("/api/knowledge/search").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"query\":\"low energy\",\"topK\":1}"))
-                .andExpect(status().isOk()).andExpect(jsonPath("$[0].id").value("battery-policy.md"));
+                .andExpect(status().isOk()).andExpect(jsonPath("$[0].metadata.documentId").value("battery-policy.md"));
     }
 
     @ParameterizedTest
@@ -733,9 +740,9 @@ class AiDroneMissionCommanderApplicationTests {
         var json = new tools.jackson.databind.json.JsonMapper();
         var input = json.readTree(requestBody).path("input");
         String text = input.isArray() ? input.get(0).asText() : input.asText();
-        int topic = text.contains("# Weather") ? 1 : text.contains("# GPS") ? 2
-                : text.contains("# Mission") ? 3 : text.contains("# Fault") ? 4
-                : text.contains("# Sector") ? 5 : 0;
+        int topic = text.contains("topic: WEATHER") ? 1 : text.contains("topic: GPS") ? 2
+                : text.contains("topic: MISSION") ? 3 : text.contains("topic: EMERGENCY") ? 4
+                : text.contains("topic: INSPECTION") ? 5 : 0;
         var response = json.createObjectNode().put("object", "list").put("model", "text-embedding-3-small");
         var item = response.putArray("data").addObject().put("object", "embedding").put("index", 0);
         var vector = item.putArray("embedding");

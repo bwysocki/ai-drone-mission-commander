@@ -7,7 +7,7 @@ import org.springframework.context.annotation.Configuration;
 @Configuration(proxyBeanMethods = false)
 @OpenAPIDefinition(info = @Info(
         title = "Drone Mission AI",
-        version = "Milestone 9",
+        version = "Milestone 10",
         description = "Ask drone operation questions, override model options and compare complete answers with SSE streaming. "
                 + "The Simulation endpoints execute deterministic missions in memory. AI endpoints provide advice, extract intent and read live simulated state through tools. "
                 + "Knowledge endpoints index and search bundled procedures using embeddings without generating an answer. "

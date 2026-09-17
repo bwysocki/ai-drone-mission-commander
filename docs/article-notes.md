@@ -1,120 +1,124 @@
-# Milestone 9 — Embeddings and Vector Store
+# Milestone 10 — Document ETL
 
-Conversation memory preserves a dialogue. It does not provide a searchable library
-of operational procedures. This milestone adds that library and explores retrieval
-before connecting it to the agent.
+Milestone 9 stored one vector per complete procedure. This milestone makes the
+preparation of knowledge explicit: read source files, transform their text, split
+it into searchable chunks, enrich metadata and write the chunks to a vector store.
+The model still does not generate an answer from the retrieved text; that is RAG
+in milestone 11.
 
-An embedding represents text as a numerical vector. Documents and queries use the
-same embedding model so that their vectors can be compared in the same space.
-A query such as “What should I do when energy is running low?” can retrieve battery
-guidance even without repeating the document's wording. This is a capability to
-check with the real model; our automated tests use predictable synthetic vectors.
+## Extract: read the source documents
 
-## Build the index explicitly
-
-The six short Markdown files cover battery, weather, GPS, mission preparation,
-fault escalation and inspection. KnowledgeCatalog loads each complete file as one
-Spring AI Document with a stable filename ID and descriptive metadata:
+KnowledgeCatalog now uses Spring AI's TextReader rather than reading text directly:
 
 ```java
-new Document(fileName, text, Map.of(
-        "source", "knowledge/" + fileName,
-        "title", title,
-        "type", type.name(),
-        "topic", topic.name()));
+var reader = new TextReader(resources.apply(source));
+reader.setCharset(StandardCharsets.UTF_8);
+String text = reader.get().getFirst().getText();
 ```
 
-Spring Boot configures the EmbeddingModel using:
+Each of the six files has an explicit, trusted catalog entry for title, type and
+topic. The catalog gives it a portable source path and stable filename ID, instead
+of keeping a machine-specific resource URI or a reader-generated random ID.
+Files are read again when ingestion is requested. An empty or missing source fails
+the operation before a replacement index can become visible.
 
-```properties
-spring.ai.openai.embedding.model=text-embedding-3-small
-spring.ai.openai.embedding.encoding-format=float
-```
+## Transform: split without losing the source
 
-KnowledgeSearchService builds the actual Spring AI store:
+KnowledgePipeline implements Spring AI DocumentTransformer. It normalizes CRLF/CR
+line endings, trims outer whitespace and delegates splitting to TokenTextSplitter:
 
 ```java
-var documents = catalog.documents();
+private final TokenTextSplitter splitter = TokenTextSplitter.builder()
+        .withChunkSize(80)
+        .withMinChunkSizeChars(0)
+        .withMinChunkLengthToEmbed(0)
+        .withKeepSeparator(true)
+        .build();
+```
+
+The small target makes chunking visible with these short sample procedures. It is
+not a recommended universal chunk size. Splitting near punctuation affects actual
+chunk sizes; the short-tail setting avoids dropping the final piece of a procedure.
+The target counts text tokens, not the additional metadata sent by the embedding
+model. This implementation does not introduce overlap between adjacent chunks.
+
+Each chunk inherits source, title, type and topic and adds:
+
+- documentId: the original filename.
+- chunkIndex: its zero-based position in that source.
+- chunkCount: the number of chunks produced from that source.
+
+The chunk ID combines the filename, position and SHA-256 of its text. Repeating
+transformation of identical input yields identical IDs, so retrieval remains
+traceable to a source even after rebuilding.
+
+## Load: publish a complete index
+
+KnowledgeSearchService computes a fingerprint over all transformed chunk IDs,
+texts and sorted metadata. If it matches the active snapshot, normal ingestion
+returns updated=false and makes no embedding calls. Otherwise it uses the vector
+store's DocumentWriter API:
+
+```java
 var candidate = SimpleVectorStore.builder(embeddingModel).build();
-candidate.add(documents);
-index = candidate;
+candidate.write(chunks);
+index = new IndexSnapshot(candidate, fingerprint);
 ```
 
-Building happens only through POST /api/knowledge/index. The service publishes the
-new index after every embedding succeeds, so a failed rebuild keeps the previous
-index usable. No partially loaded index becomes visible. This store is in memory
-and is lost when the application restarts.
+Writing creates embeddings. The service publishes the store and fingerprint as one
+snapshot only after every write succeeds. A changed corpus replaces the entire
+store; old chunks disappear. This deliberately favors a simple, atomic rebuild over
+an incremental embedding cache: when any input changes, all chunks are re-embedded.
 
-## Retrieve documents without generating an answer
+Concurrent initial searches share one successful ingestion. Searches during a
+manual rebuild keep using the previous snapshot. A failed first build can be retried
+by the next search; a failed rebuild preserves the working snapshot and fingerprint.
 
-The central API is similaritySearch:
+## Demonstration through Swagger
 
-```java
-var request = SearchRequest.builder()
-        .query(query)
-        .topK(topK)
-        .similarityThreshold(threshold);
-var filters = new FilterExpressionBuilder();
-request.filterExpression(filters.and(
-        filters.eq("type", "SAFETY"),
-        filters.eq("topic", "BATTERY")).build());
-var documents = current.similaritySearch(request.build());
-```
+Start the normal application with OpenAI credentials, then open **Knowledge search**.
 
-In the endpoint both filters are optional; when present together they use AND.
-Filtering is a metadata constraint, while ranking compares embedding vectors.
-The result exposes original text, metadata and a cosine similarity score. It is
-not an assistant answer, a confidence probability, or mission approval.
-
-## Demonstrate this milestone in Swagger UI
-
-Use the normal application profile with valid OpenAI credentials and expand
-**Knowledge search**:
-
-1. Execute GET /api/knowledge/documents. Show the six documents and the metadata
-   on battery-policy.md. This call needs no embedding request.
-2. Before the first index build, execute POST /api/knowledge/search with
-   {"query":"What should I do when energy is running low?"}. Explain the 409:
-   there is no index yet.
-3. Execute POST /api/knowledge/index and show documentCount: 6.
-4. Execute POST /api/knowledge/search with this body:
+1. Execute GET /api/knowledge/documents. Show the six source procedures.
+2. Execute GET /api/knowledge/chunks. Compare the battery procedure with its smaller
+   fragments. Show source, documentId, chunkIndex and chunkCount. Repeat the preview:
+   IDs stay the same, and neither preview calls the provider.
+3. Without calling /index, execute POST /api/knowledge/search:
 
 ```json
 {
   "query": "What should I do when energy is running low?",
   "topK": 3,
-  "similarityThreshold": 0.0
+  "similarityThreshold": 0.0,
+  "type": "SAFETY",
+  "topic": "BATTERY"
 }
 ```
 
-Inspect the returned text, source and score. Battery guidance should be relevant;
-exact scores and ordering depend on the real embedding model. Try a second query:
-“The drone can no longer determine its position.” Compare the GPS procedure.
+The first search loads knowledge automatically and then embeds the query. Results
+now represent chunks, so several matches can reference the same procedure.
 
-5. Repeat the energy query with type SAFETY and topic BATTERY. Only matching
-   metadata may appear. Change type to PROCEDURE while keeping topic BATTERY:
-   the result is empty because no document has that combination.
-6. Remove the filters and increase similarityThreshold. Explain that fewer than
-   topK results, including zero results, is valid.
+4. Execute POST /api/knowledge/index with force=false. Show documentCount=6,
+   chunkCount greater than six and updated=false. Unchanged input produces no new
+   embedding calls.
+5. Set force=true and execute again. updated=true demonstrates a deliberate rebuild
+   and incurs embedding calls even though the documents are unchanged.
+6. Restart and search again: ingestion runs again because both index and fingerprint
+   live only in this process. No provider call happens just because the app starts.
 
-Indexing and searching use the paid embedding API, but no chat completion. Spring
-AI may additionally embed “Hello World” on first use to discover vector dimensions.
-That extra call was visible in the integration test. Listing documents and starting
-the application make no embedding calls.
+Use the temporary-file test changedCorpusReplacesOldChunksAndFailedBuildCanBeRetried
+when explaining source updates and rollback. Packaged classpath files are immutable
+in normal deployment; changing them means rebuilding/redeploying. There is no upload
+endpoint or automatic file watcher in this milestone.
 
 ## What I learned
 
-SimpleVectorStore makes the retrieval mechanics visible without a database: create
-Documents, embed them, then embed the question and compare vectors. Metadata adds
-precise restrictions alongside semantic ranking. Changing the embedding model
-requires rebuilding the index; vectors from different models must not be mixed.
+ETL prepares searchable knowledge; it does not answer a question or approve a mission.
+Stable IDs help trace chunks, but IDs alone do not avoid paying for repeated
+embeddings. The fingerprint check must happen before the vector-store write.
+Fingerprint deduplication is local to the running process, not persistent storage.
 
-Tests use the real SimpleVectorStore with synthetic embeddings to verify ranking,
-thresholds, filters and atomic replacement. A local HTTP provider stub verifies the
-real OpenAI embedding client and REST path with dummy credentials, including a
-provider failure during rebuilding. It checks that retrieval never calls the chat
-endpoint. These tests verify integration mechanics, not live semantic quality.
-
-Each file remains a single document. ETL and splitting come next; RAG will later
-place retrieved text into the agent's prompt. Deterministic mission safety remains
-Java's responsibility.
+Tests exercise actual TextReader, TokenTextSplitter and SimpleVectorStore with
+synthetic embeddings, including concurrent ingestion and rollback. The HTTP test
+uses the actual OpenAI SDK against a local stub with a dummy key. Automated tests
+verify mechanics; relevance and the quality of chunk boundaries still need manual
+inspection with real queries.

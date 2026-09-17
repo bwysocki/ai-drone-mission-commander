@@ -590,46 +590,61 @@ This local demo has no authentication; a conversation ID is a lookup key, not ac
 control. Resetting the simulator does not clear memory, and clearing memory does not
 reset the simulator. `missionId` still selects current mission context per request.
 
-## Milestone 9: embeddings and semantic search
+## Milestones 9–10: semantic search and document ETL
 
-Run the normal application with the OpenAI credentials described above and open
-Swagger UI. In **Knowledge search**, try:
+Run the normal application with the OpenAI credentials described above. In Swagger's
+**Knowledge search** group:
 
-1. `GET /api/knowledge/documents`: inspect six bundled procedures and their metadata.
-   This operation does not call a provider.
-2. `POST /api/knowledge/index`: embed the documents and build a `SimpleVectorStore`
-   in memory. The response is `{"documentCount":6}`.
-3. `POST /api/knowledge/search`:
+1. GET /api/knowledge/documents shows the six original Markdown documents.
+2. GET /api/knowledge/chunks previews transformed fragments with stable IDs and
+   metadata. Neither preview calls a provider.
+3. POST /api/knowledge/search automatically builds the index if necessary:
 
 ```json
 {
   "query": "What should I do when energy is running low?",
   "topK": 3,
-  "similarityThreshold": 0.0
+  "similarityThreshold": 0.0,
+  "type": "SAFETY",
+  "topic": "BATTERY"
 }
 ```
 
-The result contains document IDs, full text, metadata and similarity scores.
-Try adding `"type":"SAFETY"` and `"topic":"BATTERY"` to restrict results.
-The filters use AND. Types are `SAFETY` and `PROCEDURE`; topics are `BATTERY`,
-`WEATHER`, `GPS`, `MISSION`, `EMERGENCY` and `INSPECTION`.
-`topK` defaults to 3 (range 1–6); `similarityThreshold` defaults to 0 (range 0–1).
-A score expresses cosine similarity, not the probability that a procedure is safe.
-A higher threshold can produce an empty result.
+The response contains **chunks**, their original source, parent document ID, chunk
+index/count and similarity score. Multiple results can come from the same source.
+Optional type/topic filters use AND. Types are SAFETY and PROCEDURE; topics are
+BATTERY, WEATHER, GPS, MISSION, EMERGENCY and INSPECTION. topK defaults to 3 (1–6),
+and similarityThreshold to 0 (0–1). Scores express cosine similarity, not safety
+confidence; a high threshold can produce no matches.
 
-Indexing and searching call the embedding provider and may incur charges; they do
-not call a chat model. The embedding model is `text-embedding-3-small`, configured
-separately from the chat model through `spring.ai.openai.embedding.model`.
-Spring AI also makes an initial embedding request to discover vector dimensions.
-Application startup does not build the index or call the embedding provider.
+POST /api/knowledge/index explicitly checks the corpus. Its response has
+`documentCount` (source files), `chunkCount` (indexed fragments) and `updated`.
+Unchanged transformed content and metadata return updated=false without embedding
+calls. To deliberately re-embed unchanged content use POST /api/knowledge/index?force=true.
+Changed content triggers a complete replacement, removing obsolete chunks. Both
+paths preserve the previous index if reading, transformation or embedding fails.
 
-Search before indexing returns 409. Restarting loses the index. Reindexing replaces
-it only after all documents have been embedded successfully; failure preserves the
-previous index. Documents use stable filename IDs, so rebuilding does not accumulate
-duplicates. Invalid input returns 400 and provider failures use the existing sanitized
-502/503 responses. These endpoints are disabled in the `simulator` profile.
+KnowledgeCatalog uses Spring AI TextReader for the six explicitly registered files
+in src/main/resources/knowledge. KnowledgePipeline normalizes line endings and uses
+TokenTextSplitter with a target of 80 text tokens per chunk, retaining short tails.
+This small size demonstrates splitting on the short teaching corpus; it is not a
+production retrieval tuning recommendation. Metadata is preserved and each chunk
+gets documentId, zero-based chunkIndex and chunkCount. IDs incorporate the source
+filename, position and a SHA-256 hash of the chunk text.
 
-Each Markdown file in `src/main/resources/knowledge` is one `Document` with `source`,
-`title`, `type` and `topic` metadata. Document splitting and an ETL pipeline belong to
-milestone 10; using retrieved content in an agent answer belongs to milestone 11.
-These fictional simulator procedures do not authorize mission execution.
+The embedding model remains text-embedding-3-small, set through
+spring.ai.openai.embedding.model. Ingestion and searches can incur provider charges;
+first use can also probe vector dimensions. There are no startup embedding calls
+and no chat completions in this flow. Concurrent initial searches share one build;
+searches during an explicit rebuild keep using the previous complete index.
+
+The index and ingestion fingerprint live only in RAM. After restart, the first
+search embeds the corpus again. There is no file watcher: call /index to check for
+source changes in a running process. Bundled files in a packaged JAR require a new
+build/deployment to change; this milestone does not introduce uploads or an external
+knowledge directory. Restart after changing embedding-model configuration.
+
+Invalid searches return 400; provider failures use the existing sanitized 502/503
+responses. The simulator profile disables these endpoints. Retrieved procedures do
+not authorize mission execution. Adding retrieved content to an agent answer is
+milestone 11 (RAG).

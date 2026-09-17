@@ -5,16 +5,9 @@ import pl.stalostech.ai_drone_mission_commander.rag.exception.InvalidKnowledgeQu
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
-import pl.stalostech.ai_drone_mission_commander.rag.exception.KnowledgeIndexNotReadyException;
 
 @RestControllerAdvice(assignableTypes = KnowledgeController.class)
 public class KnowledgeExceptionHandler {
-    @ExceptionHandler(KnowledgeIndexNotReadyException.class)
-    public ProblemDetail notReady() {
-        return ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT,
-                "Build the knowledge index with POST /api/knowledge/index before searching.");
-    }
-
     @ExceptionHandler(InvalidKnowledgeQueryException.class)
     public ProblemDetail invalidQuery() {
         return ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST,
