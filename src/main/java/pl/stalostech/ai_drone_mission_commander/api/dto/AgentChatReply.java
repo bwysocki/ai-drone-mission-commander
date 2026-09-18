@@ -4,4 +4,4 @@ import java.util.UUID;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 public record AgentChatReply(String message, ChatReply.Metadata metadata,
-        @Schema(description = "Reuse this ID to continue the conversation; history is stored in application memory.") UUID conversationId) {}
+        @Schema(description = "Reuse this ID to continue the conversation; history is stored in application memory.") UUID conversationId, RagContext retrieval) {}

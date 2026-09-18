@@ -48,13 +48,7 @@ public class KnowledgeSearchService {
     private record IndexSnapshot(SimpleVectorStore store, String fingerprint) {}
 
     public List<Document> search(String query, int topK, double threshold, KnowledgeType type, KnowledgeTopic topic) {
-        if (query == null || query.isBlank() || query.length() > 2000) {
-            throw new InvalidKnowledgeQueryException("query must contain 1 to 2000 nonblank characters");
-        }
-        if (topK < 1 || topK > 6) throw new InvalidKnowledgeQueryException("topK must be between 1 and 6");
-        if (!Double.isFinite(threshold) || threshold < 0 || threshold > 1) {
-            throw new InvalidKnowledgeQueryException("similarityThreshold must be between 0 and 1");
-        }
+        validateSearch(query, topK, threshold);
         var current = index;
         if (current == null) current = ensureIndex();
         var request = SearchRequest.builder().query(query).topK(topK).similarityThreshold(threshold);
@@ -68,4 +62,14 @@ public class KnowledgeSearchService {
         if (filter != null) request.filterExpression(filter.build());
         return current.store().similaritySearch(request.build());
     }
+    public static void validateSearch(String query, int topK, double threshold) {
+        if (query == null || query.isBlank() || query.length() > 2000) {
+            throw new InvalidKnowledgeQueryException("query must contain 1 to 2000 nonblank characters");
+        }
+        if (topK < 1 || topK > 6) throw new InvalidKnowledgeQueryException("topK must be between 1 and 6");
+        if (!Double.isFinite(threshold) || threshold < 0 || threshold > 1) {
+            throw new InvalidKnowledgeQueryException("similarityThreshold must be between 0 and 1");
+        }
+    }
+
 }

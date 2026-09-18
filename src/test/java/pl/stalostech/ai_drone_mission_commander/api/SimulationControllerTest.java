@@ -47,6 +47,7 @@ class SimulationControllerTest {
         assertThat(paths.has("/api/simulation/events")).isTrue();
         assertThat(paths.has("/api/chat")).isFalse();
         assertThat(paths.has("/api/knowledge/search")).isFalse();
+        assertThat(paths.has("/api/knowledge/ask")).isFalse();
         assertThat(context.getBeansOfType(pl.stalostech.ai_drone_mission_commander.rag.KnowledgeSearchService.class)).isEmpty();
         assertThat(paths.has("/api/agent/chat")).isFalse();
         assertThat(paths.has("/api/agent/tools")).isFalse();

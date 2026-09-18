@@ -779,18 +779,18 @@ Give the agent operational knowledge.
 
 ### Phase 1 — Simple RAG
 
-* [ ] Add simple question-answer RAG
-* [ ] Ask policy questions
-* [ ] Compare with and without RAG
-* [ ] Inspect retrieved context
+* [x] Add simple question-answer RAG
+* [x] Ask policy questions
+* [x] Compare with and without RAG
+* [x] Inspect retrieved context
 
 ### Phase 2 — Modular RAG
 
-* [ ] Add `RetrievalAugmentationAdvisor`
-* [ ] Add query transformation if useful
-* [ ] Add metadata filtering
-* [ ] Control document selection
-* [ ] Inspect retrieval pipeline
+* [x] Add `RetrievalAugmentationAdvisor`
+* [x] Add query transformation if useful
+* [x] Add metadata filtering
+* [x] Control document selection
+* [x] Inspect retrieval pipeline
 
 ### Key Architectural Rule
 

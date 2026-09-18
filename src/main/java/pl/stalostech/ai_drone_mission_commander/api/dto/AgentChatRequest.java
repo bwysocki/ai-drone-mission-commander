@@ -12,4 +12,6 @@ public record AgentChatRequest(
         @Schema(description = "Optional conversation UUID. Reuse it to load the last 20 user/assistant messages. Omit to start a new conversation.")
         UUID conversationId,
         @Schema(description = "Optional existing mission ID, returned by the Simulation API. Omit to select no mission.")
-        @JsonDeserialize(using = ChatRequest.MessageDeserializer.class) String missionId) {}
+        @JsonDeserialize(using = ChatRequest.MessageDeserializer.class) String missionId,
+        @Schema(description = "Omit for tools and memory only. Supply {} to enable retrieval, or select filters/query.")
+        RagOptions rag) {}

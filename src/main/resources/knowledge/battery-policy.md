@@ -1,5 +1,9 @@
 # Battery readiness policy
 
+Operational policy: if battery is below 20%, do not start a new inspection mission.
+This is retrieved planning guidance. The separate deterministic enforcement of
+this threshold is introduced in milestone 12; an AI answer is not mission approval.
+
 This is guidance for the fictional drone simulator, not real aircraft certification.
 Before dispatch, read the drone's current battery percentage and calculate the
 complete route, including the return leg when requested. Compare available energy

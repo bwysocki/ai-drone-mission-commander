@@ -13,7 +13,7 @@ import pl.stalostech.ai_drone_mission_commander.agent.exception.InvalidMissionOu
 import pl.stalostech.ai_drone_mission_commander.agent.exception.AgentToolException;
 import pl.stalostech.ai_drone_mission_commander.simulation.exception.SimulationNotFoundException;
 
-@RestControllerAdvice(assignableTypes = {ChatController.class, MissionIntentController.class, WorldAgentController.class, KnowledgeController.class})
+@RestControllerAdvice(assignableTypes = {ChatController.class, MissionIntentController.class, WorldAgentController.class, KnowledgeController.class, KnowledgeAnswerController.class})
 public class ChatExceptionHandler {
 
     @ExceptionHandler(SimulationNotFoundException.class)

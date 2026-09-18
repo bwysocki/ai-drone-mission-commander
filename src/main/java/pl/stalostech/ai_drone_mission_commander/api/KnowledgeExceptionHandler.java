@@ -6,7 +6,7 @@ import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
-@RestControllerAdvice(assignableTypes = KnowledgeController.class)
+@RestControllerAdvice(assignableTypes = {KnowledgeController.class, KnowledgeAnswerController.class, WorldAgentController.class})
 public class KnowledgeExceptionHandler {
     @ExceptionHandler(InvalidKnowledgeQueryException.class)
     public ProblemDetail invalidQuery() {

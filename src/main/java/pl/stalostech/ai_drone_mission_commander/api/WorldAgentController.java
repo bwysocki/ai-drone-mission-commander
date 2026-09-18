@@ -18,6 +18,8 @@ import pl.stalostech.ai_drone_mission_commander.api.dto.AgentChatRequest;
 import pl.stalostech.ai_drone_mission_commander.api.mapper.ChatRequestMapper;
 import pl.stalostech.ai_drone_mission_commander.api.mapper.ChatResponseMapper;
 import pl.stalostech.ai_drone_mission_commander.tools.WorldToolRegistry;
+import pl.stalostech.ai_drone_mission_commander.rag.KnowledgeRag;
+import pl.stalostech.ai_drone_mission_commander.api.mapper.RagMapper;
 
 @RestController
 @Profile("!simulator")
@@ -26,9 +28,10 @@ import pl.stalostech.ai_drone_mission_commander.tools.WorldToolRegistry;
 public class WorldAgentController {
     private final WorldAgentService agent;
     private final WorldToolRegistry tools;
+    private final KnowledgeRag rag;
 
-    public WorldAgentController(WorldAgentService agent, WorldToolRegistry tools) {
-        this.agent = agent; this.tools = tools;
+    public WorldAgentController(WorldAgentService agent, WorldToolRegistry tools, KnowledgeRag rag) {
+        this.agent = agent; this.tools = tools; this.rag = rag;
     }
 
     @PostMapping("/chat")
@@ -40,7 +43,7 @@ public class WorldAgentController {
             @ApiResponse(responseCode = "503", description = "Provider unavailable or rate limited", content = @Content)
     })
     @Operation(summary = "Ask about the live simulated world",
-            description = "The model may call read-only tools before answering. Reuse conversationId to load the last 20 user/assistant messages; omit it for a new conversation. Includes fresh simulator context and an optional missionId selected per request. History is not authoritative telemetry. Does not execute or approve missions. Missing selected missions return 404; unrecoverable agent errors return 502 and provider errors 502/503.")
+            description = "The model may call read-only tools before answering. Add rag:{} to retrieve procedures once before the tool loop; omitted rag leaves retrieval disabled. The retrieval field shows actual selected context. Reuse conversationId to load the last 20 user/assistant messages; omit it for a new conversation. Includes fresh simulator context and an optional missionId selected per request. History is not authoritative telemetry. Does not execute or approve missions. Missing selected missions return 404; unrecoverable agent errors return 502 and provider errors 502/503.")
     public AgentChatReply chat(@RequestBody AgentChatRequest request) {
         ChatRequestMapper.validateMessage(request.message());
         if (request.missionId() != null && request.missionId().isBlank()) {
@@ -48,9 +51,10 @@ public class WorldAgentController {
         }
         UUID conversationId = request.conversationId() == null ? UUID.randomUUID() : request.conversationId();
         String missionId = request.missionId() == null ? null : request.missionId().strip();
+        var session = request.rag() == null ? null : rag.prepare(RagMapper.selection(request.message(), request.rag()));
         var reply = ChatResponseMapper.toReply(agent.chat(request.message(),
-                ChatRequestMapper.options(request.options()), conversationId, missionId));
-        return new AgentChatReply(reply.message(), reply.metadata(), conversationId);
+                ChatRequestMapper.options(request.options()), conversationId, missionId, session));
+        return new AgentChatReply(reply.message(), reply.metadata(), conversationId, RagMapper.context(session));
     }
 
     @GetMapping("/tools")

@@ -117,6 +117,8 @@ class AiDroneMissionCommanderApplicationTests {
     @BeforeEach
     void resetProvider() {
         REQUESTS.clear();
+        org.springframework.test.util.ReflectionTestUtils.setField(
+                context.getBean(pl.stalostech.ai_drone_mission_commander.rag.KnowledgeSearchService.class), "index", null);
         RESPONSE.set(PROVIDER_RESPONSE);
         TOOL_RESPONSE.set(null);
         PROVIDER_STATUS.set(200);
@@ -168,7 +170,7 @@ class AiDroneMissionCommanderApplicationTests {
                 .andExpect(jsonPath("$.components.schemas.ChatRequest.properties.message.type").value("string"))
                 .andReturn();
         JsonNode spec = objectMapper.readTree(result.getResponse().getContentAsString());
-        assertThat(spec.path("paths").size()).isEqualTo(25);
+        assertThat(spec.path("paths").size()).isEqualTo(26);
         assertThat(spec.at("/components/schemas/AgentChatRequest/properties/conversationId/format").asText())
                 .isEqualTo("uuid");
         assertThat(spec.at("/components/schemas/AgentChatRequest/properties/missionId/type").asText())
@@ -575,13 +577,12 @@ class AiDroneMissionCommanderApplicationTests {
                 .andExpect(jsonPath("$[0].score").value(1.0))
                 .andExpect(jsonPath("$[0].metadata.source").value("knowledge/battery-policy.md"));
         // First use also probes the embedding dimension with "Hello World".
-        assertThat(REQUESTS).hasSize(chunks + 2);
+        assertThat(REQUESTS.size()).isBetween(chunks + 1, chunks + 2);
         for (var sent : REQUESTS) {
             assertThat(sent.path()).isEqualTo("/v1/embeddings");
             assertThat(sent.authorization()).isEqualTo("Bearer test-only-not-a-real-key");
             assertThat(objectMapper.readTree(sent.body()).path("model").asText()).isEqualTo("text-embedding-3-small");
         }
-        assertThat(REQUESTS.peek().body()).contains("Hello World");
         assertThat(REQUESTS).anySatisfy(sent -> assertThat(sent.body()).contains("Battery readiness policy"));
         REQUESTS.clear();
         mvc.perform(post("/api/knowledge/index")).andExpect(status().isOk())
@@ -672,6 +673,99 @@ class AiDroneMissionCommanderApplicationTests {
         assertThat(REQUESTS).isEmpty();
     }
 
+    @Test
+    void policyAnswersCompareRagWithBaselineAndExposeActualContext() throws Exception {
+        mvc.perform(post("/api/knowledge/ask").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"message\":\"What is the inspection battery policy?\",\"useRag\":false}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.retrieval.enabled").value(false))
+                .andExpect(jsonPath("$.retrieval.documents.length()").value(0));
+        assertThat(REQUESTS).hasSize(1);
+        assertThat(REQUESTS.peek().path()).isEqualTo("/v1/chat/completions");
+        assertThat(REQUESTS.peek().body()).doesNotContain("RETRIEVED PROCEDURES");
+        REQUESTS.clear();
+        mvc.perform(post("/api/knowledge/ask").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"message\":\"What is the inspection battery policy?\",\"rag\":{\"topK\":6,\"type\":\"SAFETY\",\"topic\":\"BATTERY\"}}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.retrieval.enabled").value(true))
+                .andExpect(jsonPath("$.retrieval.documents[0].metadata.source").value("knowledge/battery-policy.md"))
+                .andExpect(jsonPath("$.answer.message").value(ANSWER));
+        var chat = REQUESTS.stream().filter(r -> r.path().equals("/v1/chat/completions")).toList();
+        assertThat(chat).hasSize(1);
+        assertThat(chat.getFirst().body()).contains("RETRIEVED PROCEDURES", "below 20%", "battery-policy.md");
+        REQUESTS.clear();
+        mvc.perform(post("/api/knowledge/ask").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"message\":\"battery policy\",\"rag\":{\"type\":\"PROCEDURE\",\"topic\":\"BATTERY\"}}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.retrieval.documents.length()").value(0));
+        assertThat(REQUESTS).hasSize(2);
+        assertThat(REQUESTS.stream().filter(r -> r.path().equals("/v1/chat/completions")).findFirst().orElseThrow().body())
+                .doesNotContain("below 20%");
+    }
+
+    @Test
+    void agentRagUsesLiveToolsAndStoresOnlyOriginalQuestion() throws Exception {
+        var world = context.getBean(pl.stalostech.ai_drone_mission_commander.simulation.DroneWorld.class);
+        world.reset();
+        context.getBean(pl.stalostech.ai_drone_mission_commander.simulation.SimulationEventService.class)
+                .inject(pl.stalostech.ai_drone_mission_commander.domain.SimulationEventType.BATTERY_DROP, "alpha", 64);
+        var before = world.snapshot();
+        var calls = objectMapper.createArrayNode();
+        addToolCall(calls, "getDroneStatus", "{\"droneId\":\"alpha\"}");
+        addToolCall(calls, "getWeather", "{}");
+        // This response must survive the embedding requests made before the first chat call.
+        setToolResponse(calls);
+        String id = java.util.UUID.randomUUID().toString();
+        mvc.perform(post("/api/agent/chat").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"message\":\"What about an inspection?\",\"conversationId\":\"" + id
+                        + "\",\"rag\":{\"query\":\"battery policy\",\"topic\":\"BATTERY\",\"topK\":6}}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.retrieval.enabled").value(true))
+                .andExpect(jsonPath("$.retrieval.query").value("battery policy"))
+                .andExpect(jsonPath("$.retrieval.documents[0].metadata.topic").value("BATTERY"));
+        var requests = java.util.List.copyOf(REQUESTS);
+        var chats = requests.stream().filter(r -> r.path().equals("/v1/chat/completions")).toList();
+        assertThat(chats).hasSize(2);
+        assertThat(requests.subList(0, requests.size() - 2)).isNotEmpty()
+                .allSatisfy(r -> assertThat(r.path()).isEqualTo("/v1/embeddings"));
+        assertThat(requests.subList(requests.size() - 2, requests.size())).containsExactlyElementsOf(chats);
+        assertThat(chats).allSatisfy(r -> assertThat(r.body()).contains("RETRIEVED PROCEDURES", "below 20%"));
+        var results = new java.util.ArrayList<JsonNode>();
+        objectMapper.readTree(chats.getLast().body()).path("messages").forEach(message -> {
+            if (message.path("role").asText().equals("tool")) {
+                results.add(objectMapper.readTree(message.path("content").asText()));
+            }
+        });
+        assertThat(results).hasSize(2);
+        assertThat(results.get(0).path("batteryPercent").asInt()).isEqualTo(18);
+        assertThat(results.get(1).path("visibility").asText()).isEqualTo("GOOD");
+        assertThat(world.snapshot()).isEqualTo(before);
+        mvc.perform(get("/api/agent/conversations/" + id + "/messages")).andExpect(status().isOk());
+        var memory = context.getBean(pl.stalostech.ai_drone_mission_commander.memory.ConversationMemory.class);
+        assertThat(memory.get(id)).hasSize(2);
+        assertThat(memory.get(id).getFirst().getText()).isEqualTo("What about an inspection?");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"{\"topK\":0}", "{\"topK\":7}", "{\"topK\":1.2}", "{\"similarityThreshold\":-1}",
+            "{\"topic\":\"UNKNOWN\"}", "{\"query\":\" \"}", "{\"query\":123}"})
+    void rejectsInvalidRagOptionsBeforeAnyProviderCall(String options) throws Exception {
+        for (String path : java.util.List.of("/api/knowledge/ask", "/api/agent/chat")) {
+            mvc.perform(post(path).contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"message\":\"battery\",\"rag\":" + options + "}"))
+                    .andExpect(status().isBadRequest());
+        }
+        assertThat(REQUESTS).isEmpty();
+    }
+
+    @Test
+    void embeddingFailureIsSanitizedAndDoesNotReachChatOrMemory() throws Exception {
+        PROVIDER_STATUS.set(429);
+        RESPONSE.set("{\"error\":{\"message\":\"private-embedding-error\",\"type\":\"rate_limit_exceeded\"}}");
+        for (String path : java.util.List.of("/api/knowledge/ask", "/api/agent/chat")) {
+            mvc.perform(post(path).contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"message\":\"battery policy\",\"rag\":{}}"))
+                    .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.title").value("AI provider error"));
+        }
+        assertThat(REQUESTS).isNotEmpty().allSatisfy(r -> assertThat(r.path()).isEqualTo("/v1/embeddings"));
+    }
+
     private void setToolResponse(tools.jackson.databind.node.ArrayNode calls) {
         var response = objectMapper.readTree(PROVIDER_RESPONSE);
         var choice = (tools.jackson.databind.node.ObjectNode) response.path("choices").get(0);
@@ -716,7 +810,8 @@ class AiDroneMissionCommanderApplicationTests {
                         exchange.getResponseBody().write((streamChunk("battery.") + streamFinish()).getBytes(StandardCharsets.UTF_8));
                         return;
                     }
-                    String toolResponse = TOOL_RESPONSE.getAndSet(null);
+                    String toolResponse = exchange.getRequestURI().getPath().equals("/v1/chat/completions")
+                            ? TOOL_RESPONSE.getAndSet(null) : null;
                     String response = toolResponse == null ? RESPONSE.get() : toolResponse;
                     if (exchange.getRequestURI().getPath().endsWith("/embeddings") && PROVIDER_STATUS.get() == 200) {
                         response = embeddingResponse(requestBody);

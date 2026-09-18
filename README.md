@@ -536,16 +536,18 @@ IDs. It contains no prompt, answer, tool arguments or mission payload. The chain
 DevelopmentLoggingAdvisor (dev only)
   → MissionContextAdvisor
     → MessageChatMemoryAdvisor
-      → ToolCallingAdvisor
-        → AgentIterationLogger
-          → model call
+      → RetrievalAugmentationAdvisor (when RAG is enabled)
+        → ToolCallingAdvisor
+          → AgentIterationLogger
+            → model call
 ```
 
 Lower order values run first on the request; responses pass back in reverse.
 The context and development advisors run once per request. The iteration logger
 runs inside the tool loop. In Spring AI's log names, the tool advisor appears as
 `Tool Calling Advisor` and the terminal model advisor as `call`.
-MessageChatMemoryAdvisor was added in milestone 8; RAG remains a later milestone.
+MessageChatMemoryAdvisor was added in milestone 8; milestone 11 optionally adds
+RetrievalAugmentationAdvisor after memory and before the tool loop.
 The standalone `simulator` profile keeps AI advisors and endpoints disabled.
 
 ## Milestone 8: conversation memory
@@ -646,5 +648,70 @@ knowledge directory. Restart after changing embedding-model configuration.
 
 Invalid searches return 400; provider failures use the existing sanitized 502/503
 responses. The simulator profile disables these endpoints. Retrieved procedures do
-not authorize mission execution. Adding retrieved content to an agent answer is
-milestone 11 (RAG).
+not authorize mission execution. Milestone 11 below adds retrieved content to answers through RAG.
+
+## Milestone 11: RAG for procedures and the world agent
+
+In Swagger's **Knowledge answers** group, POST /api/knowledge/ask answers policy
+questions without tools or memory:
+
+```json
+{
+  "message": "What is the battery policy for starting a new inspection?",
+  "useRag": true,
+  "rag": { "topK": 6, "type": "SAFETY", "topic": "BATTERY" }
+}
+```
+
+RAG is enabled by default here. Repeat with useRag=false to use the same system
+prompt without retrieving documents or making embedding calls. The response includes
+answer (text and chat metadata) and retrieval (enabled, effective query and the exact
+selected chunks with text, source metadata and scores). These chunks are evidence
+supplied to the model, not a guarantee that it cited or followed every source.
+
+In **World agent**, POST /api/agent/chat enables RAG only when rag is supplied:
+
+```json
+{
+  "message": "Can Alpha start an inspection of SECTOR_B and return home? Check current status and weather, and consult the battery policy.",
+  "rag": { "topK": 6, "type": "SAFETY", "topic": "BATTERY" }
+}
+```
+
+Use rag:{} for default retrieval settings (topK=3, similarityThreshold=0, no filters).
+Omit rag for the existing tools-and-memory behavior. Existing message, options,
+conversationId and missionId fields are unchanged; replies add retrieval alongside
+message, metadata and conversationId. Repeat with a fresh conversation ID when
+comparing with/without RAG so prior answers do not influence the comparison.
+
+RagOptions supports the same typed filters as search; both filters use AND. Optional
+rag.query supplies a standalone search question for an ambiguous follow-up, e.g.
+"battery policy for starting inspections". It changes only retrieval; the original
+user message still goes to the model and memory. Whitespace is normalized. There
+is no extra model call to rewrite or expand the query, and no automatic resolution
+of pronouns for retrieval. Limits: query 1–2000 nonblank characters, topK 1–6,
+similarityThreshold 0–1. Invalid options fail before any provider call.
+
+The modular pipeline uses RetrievalAugmentationAdvisor with a DocumentRetriever
+backed by KnowledgeSearchService, a query transformer and a QueryAugmenter that
+preserves source IDs and metadata. It reuses lazy ETL/indexing. Retrieval runs once
+per request, after memory has loaded and before the tool loop. Retrieved text is
+not saved as a user message in memory. Final assistant answers remain conversational
+history and may mention old policies; they are not fresh policy evidence.
+
+An empty retrieval returns an empty documents array. The model is instructed to say
+that no matching policy evidence was supplied, while the world agent can still use
+tools for current facts. Provider failures return the existing sanitized 502/503
+responses instead of silently switching to an ungrounded answer.
+
+To demonstrate the main scenario, reset the simulator and inject BATTERY_DROP with
+{"type":"BATTERY_DROP","droneId":"alpha","amount":64}. Alpha starts at 82%, so
+this produces 18%; reset weather has GOOD visibility and no rain. Send the agent
+request above. The supplied battery policy says not to start a new inspection below
+20%. Expect advice combining that policy with fresh tool readings. The response
+must not claim to authorize or execute the mission.
+
+The 20% threshold is currently documentary guidance. Deterministic enforcement of
+that threshold belongs to milestone 12; this milestone does not change the Simulation
+API's execution rules. Tools provide current facts, RAG provides procedures, memory
+provides dialogue and Java remains responsible for enforcing safety.

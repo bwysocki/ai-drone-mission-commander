@@ -282,3 +282,23 @@ first searches embed the corpus once; searches during rebuilding use the old ind
 The HTTP integration test covers preview, lazy ingestion, skipped repeated ingestion,
 forced rebuild failure, provider error mapping and retrieval of chunk metadata.
 Live semantic quality remains a manual check with the real embedding model.
+
+# Milestone 11 — Live facts plus retrieved policy
+
+Reset the world and inject BATTERY_DROP 64 for Alpha: battery becomes 18%, weather
+remains GOOD visibility and no rain. Ask POST /api/agent/chat whether Alpha can start
+an inspection of SECTOR_B and return, with rag={"topK":6,"type":"SAFETY","topic":"BATTERY"}.
+Expect fresh tool readings and retrieved guidance against starting a new inspection
+below 20%. The agent must not claim it approved or executed a mission.
+
+KnowledgeRagTest checks the actual final prompt for the policy and real simulator
+tool responses, one retrieval per turn, unchanged world state and original-text
+memory. Model output is scripted; the quality of the live explanation remains a
+manual check. This milestone does not enforce the 20% threshold in Java execution.
+
+Compare /api/knowledge/ask with useRag=false and true. Inspect retrieval.query and
+documents (IDs, text, metadata and scores). Combining PROCEDURE with BATTERY should
+return no policy fragments and prompt an acknowledgement of missing evidence.
+HTTP tests cover the comparison, empty context, validation before provider calls,
+provider 429 handling and agent memory without augmented user text. Agent comparisons
+should use different conversation IDs so previous policy answers do not affect them.

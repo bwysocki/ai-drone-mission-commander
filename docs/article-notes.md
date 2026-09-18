@@ -1,124 +1,151 @@
-# Milestone 10 — Document ETL
 
-Milestone 9 stored one vector per complete procedure. This milestone makes the
-preparation of knowledge explicit: read source files, transform their text, split
-it into searchable chunks, enrich metadata and write the chunks to a vector store.
-The model still does not generate an answer from the retrieved text; that is RAG
-in milestone 11.
+# Milestone 11 — Retrieval-Augmented Generation
 
-## Extract: read the source documents
+The previous milestone could find procedure fragments. Now those fragments become
+context for an answer. RAG connects retrieval with generation; it does not give the
+model current telemetry or authority to execute a mission.
 
-KnowledgeCatalog now uses Spring AI's TextReader rather than reading text directly:
+## Start with a policy question
 
-```java
-var reader = new TextReader(resources.apply(source));
-reader.setCharset(StandardCharsets.UTF_8);
-String text = reader.get().getFirst().getText();
-```
+POST /api/knowledge/ask is a simple question-answer path. It uses a dedicated
+ChatClient with no tools or conversation memory. Set useRag=false to run the same
+question with the same system prompt but without retrieving knowledge. This makes
+the comparison clearer than changing both the prompt and the endpoint at once.
 
-Each of the six files has an explicit, trusted catalog entry for title, type and
-topic. The catalog gives it a portable source path and stable filename ID, instead
-of keeping a machine-specific resource URI or a reader-generated random ID.
-Files are read again when ingestion is requested. An empty or missing source fails
-the operation before a replacement index can become visible.
+The answer includes a retrieval object with the actual search query and selected
+chunks. The server obtains this context from the retrieval pipeline, not from text
+the model generates. It shows what the model received, not which sources it truly
+used to reach its answer.
 
-## Transform: split without losing the source
+## Build the modular pipeline
 
-KnowledgePipeline implements Spring AI DocumentTransformer. It normalizes CRLF/CR
-line endings, trims outer whitespace and delegates splitting to TokenTextSplitter:
+KnowledgeRag prepares a new RetrievalAugmentationAdvisor for each request:
 
 ```java
-private final TokenTextSplitter splitter = TokenTextSplitter.builder()
-        .withChunkSize(80)
-        .withMinChunkSizeChars(0)
-        .withMinChunkLengthToEmbed(0)
-        .withKeepSeparator(true)
+var advisor = RetrievalAugmentationAdvisor.builder()
+        .order(ToolCallingAdvisor.DEFAULT_ORDER - 1)
+        .taskExecutor(new SyncTaskExecutor())
+        .queryTransformers(original -> original.mutate().text(query).build())
+        .documentRetriever(q -> search.search(q.text(), selection.topK(),
+                selection.threshold(), selection.type(), selection.topic()))
+        .queryAugmenter((original, documents) -> {
+            // Capture the actual selected documents in this request's trace.
+            // Append reference JSON with chunk IDs, metadata and text.
+            return original.mutate().text(augmentedText).build();
+        })
         .build();
 ```
 
-The small target makes chunking visible with these short sample procedures. It is
-not a recommended universal chunk size. Splitting near punctuation affects actual
-chunk sizes; the short-tail setting avoids dropping the final piece of a procedure.
-The target counts text tokens, not the additional metadata sent by the embedding
-model. This implementation does not introduce overlap between adjacent chunks.
+The augmenter body above is abbreviated; see KnowledgeRag.java for the complete
+implementation. The retriever reuses the milestone 10 index and typed metadata
+filters, including automatic ingestion on first use. No second vector store is
+created for RAG. topK and similarityThreshold control the selected fragments.
 
-Each chunk inherits source, title, type and topic and adds:
+The query transformer normalizes whitespace and optionally substitutes rag.query.
+This is useful when the user says “What about an inspection?” but retrieval needs
+“battery policy for starting inspections”. It changes retrieval only: the original
+question is preserved for generation. We deliberately do not add an LLM query
+rewriter, its extra latency or an automatic guess about ambiguous follow-ups.
 
-- documentId: the original filename.
-- chunkIndex: its zero-based position in that source.
-- chunkCount: the number of chunks produced from that source.
+The QueryAugmenter serializes selected fragments with their IDs and source metadata.
+System instructions treat this material as reference data, never higher-priority
+instructions. Empty retrieval is represented explicitly as an empty list; the model
+is instructed to acknowledge missing policy evidence rather than invent a rule.
+This is a prompting behavior to inspect, not deterministic proof of grounding.
 
-The chunk ID combines the filename, position and SHA-256 of its text. Repeating
-transformation of identical input yields identical IDs, so retrieval remains
-traceable to a source even after rebuilding.
+## Combine tools, RAG and memory
 
-## Load: publish a complete index
+The world agent opts into RAG when the request supplies rag, including an empty
+object. The advisor order is:
 
-KnowledgeSearchService computes a fingerprint over all transformed chunk IDs,
-texts and sorted metadata. If it matches the active snapshot, normal ingestion
-returns updated=false and makes no embedding calls. Otherwise it uses the vector
-store's DocumentWriter API:
-
-```java
-var candidate = SimpleVectorStore.builder(embeddingModel).build();
-candidate.write(chunks);
-index = new IndexSnapshot(candidate, fingerprint);
+```text
+DevelopmentLoggingAdvisor (dev only)
+    → MissionContextAdvisor
+    → MessageChatMemoryAdvisor
+    → RetrievalAugmentationAdvisor (when enabled)
+    → ToolCallingAdvisor
+    → model and read-only tool rounds
 ```
 
-Writing creates embeddings. The service publishes the store and fingerprint as one
-snapshot only after every write succeeds. A changed corpus replaces the entire
-store; old chunks disappear. This deliberately favors a simple, atomic rebuild over
-an incremental embedding cache: when any input changes, all chunks are re-embedded.
+Memory must run before query augmentation. It then stores the original user message
+and final assistant answer, rather than saving the retrieved corpus inside a user
+turn. The RAG advisor also runs before the tool loop, so a multi-round tool call
+does not repeat retrieval on every iteration. Each request owns its trace; sources
+from one conversation cannot be reused as the trace for another.
 
-Concurrent initial searches share one successful ingestion. Searches during a
-manual rebuild keep using the previous snapshot. A failed first build can be retried
-by the next search; a failed rebuild preserves the working snapshot and fingerprint.
+Tools answer “What is Alpha's battery now?”. RAG answers “What does the inspection
+policy say?”. Memory helps interpret conversation references. Java remains the
+place for enforceable safety decisions.
 
-## Demonstration through Swagger
+## Demonstration in Swagger
 
-Start the normal application with OpenAI credentials, then open **Knowledge search**.
-
-1. Execute GET /api/knowledge/documents. Show the six source procedures.
-2. Execute GET /api/knowledge/chunks. Compare the battery procedure with its smaller
-   fragments. Show source, documentId, chunkIndex and chunkCount. Repeat the preview:
-   IDs stay the same, and neither preview calls the provider.
-3. Without calling /index, execute POST /api/knowledge/search:
+1. Open **Knowledge answers → POST /api/knowledge/ask**:
 
 ```json
 {
-  "query": "What should I do when energy is running low?",
-  "topK": 3,
-  "similarityThreshold": 0.0,
-  "type": "SAFETY",
-  "topic": "BATTERY"
+  "message": "What is the battery policy for starting a new inspection?",
+  "useRag": false
 }
 ```
 
-The first search loads knowledge automatically and then embeds the query. Results
-now represent chunks, so several matches can reference the same procedure.
+Show retrieval.enabled=false and an empty documents array. No embedding request is
+needed. A grounded policy answer is not available without supplied evidence.
 
-4. Execute POST /api/knowledge/index with force=false. Show documentCount=6,
-   chunkCount greater than six and updated=false. Unchanged input produces no new
-   embedding calls.
-5. Set force=true and execute again. updated=true demonstrates a deliberate rebuild
-   and incurs embedding calls even though the documents are unchanged.
-6. Restart and search again: ingestion runs again because both index and fingerprint
-   live only in this process. No provider call happens just because the app starts.
+2. Repeat with useRag=true and select the battery documents:
 
-Use the temporary-file test changedCorpusReplacesOldChunksAndFailedBuildCanBeRetried
-when explaining source updates and rollback. Packaged classpath files are immutable
-in normal deployment; changing them means rebuilding/redeploying. There is no upload
-endpoint or automatic file watcher in this milestone.
+```json
+{
+  "message": "What is the battery policy for starting a new inspection?",
+  "useRag": true,
+  "rag": { "topK": 6, "type": "SAFETY", "topic": "BATTERY" }
+}
+```
 
-## What I learned
+Show the returned fragments, source filenames and scores. Find the statement that
+battery below 20% means a new inspection should not start. The first request may
+also build the index, so it can take longer and incur ingestion costs.
 
-ETL prepares searchable knowledge; it does not answer a question or approve a mission.
-Stable IDs help trace chunks, but IDs alone do not avoid paying for repeated
-embeddings. The fingerprint check must happen before the vector-store write.
-Fingerprint deduplication is local to the running process, not persistent storage.
+3. Change type to PROCEDURE while keeping topic BATTERY. There is no matching
+combination: documents is empty. Inspect whether the answer acknowledges missing
+policy evidence. A lack of matches is not evidence that an operation is safe.
 
-Tests exercise actual TextReader, TokenTextSplitter and SimpleVectorStore with
-synthetic embeddings, including concurrent ingestion and rollback. The HTTP test
-uses the actual OpenAI SDK against a local stub with a dummy key. Automated tests
-verify mechanics; relevance and the quality of chunk boundaries still need manual
-inspection with real queries.
+4. Open **Simulation**, reset the world, then POST /api/simulation/events:
+
+```json
+{"type":"BATTERY_DROP","droneId":"alpha","amount":64}
+```
+
+Alpha starts at 82%, so it now has 18%. Reset weather has GOOD visibility and no rain.
+
+5. Open **World agent → POST /api/agent/chat**:
+
+```json
+{
+  "message": "Can Alpha start an inspection of SECTOR_B and return home? Check current status and weather, and consult the battery policy.",
+  "rag": { "topK": 6, "type": "SAFETY", "topic": "BATTERY" }
+}
+```
+
+Show the selected battery policy and the answer using current tool readings. Expect
+advice against starting an inspection at 18%, citing the procedure. The agent cannot
+approve or execute it. Use the returned conversationId to inspect history: it should
+contain the original question, without the RETRIEVED PROCEDURES block.
+
+6. For an agent comparison, omit rag and use a new conversation. Reusing the previous
+conversation would carry its policy answer into history and contaminate the comparison.
+
+## Verification and boundaries
+
+KnowledgeRagTest uses real retrieval/advisor/tool implementations with mocked external
+models. It verifies that the final prompt combines the retrieved 20% policy with
+actual simulator tool results of 18% battery and good weather, retrieval runs once,
+and memory retains the original question. Scripted answers do not prove real model
+reasoning; inspect the live answer separately during the Swagger demonstration.
+
+HTTP tests use the real OpenAI SDK against the existing local stub. They cover
+with/without RAG, actual retrieval metadata, empty filters, invalid requests and
+embedding-provider failures without real credentials or external model calls.
+
+The new 20% policy is guidance stored in the knowledge base. This milestone does
+not add its deterministic enforcement to mission execution. Milestone 12 adds the
+Java safety layer; RAG alone must not be treated as that layer.

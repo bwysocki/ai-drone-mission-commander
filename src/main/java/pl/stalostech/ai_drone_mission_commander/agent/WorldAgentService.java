@@ -24,6 +24,7 @@ import pl.stalostech.ai_drone_mission_commander.agent.advisor.AgentRequestContex
 import pl.stalostech.ai_drone_mission_commander.agent.advisor.MissionContextAdvisor;
 import pl.stalostech.ai_drone_mission_commander.agent.advisor.DevelopmentLoggingAdvisor;
 import pl.stalostech.ai_drone_mission_commander.memory.ConversationMemory;
+import pl.stalostech.ai_drone_mission_commander.rag.KnowledgeRag;
 
 @Service
 @Profile("!simulator")
@@ -39,9 +40,9 @@ public class WorldAgentService {
         this.memory = memory;
         builder.defaultAdvisors(missionContext);
         builder.defaultAdvisors(MessageChatMemoryAdvisor.builder(memory)
-                .order(ToolCallingAdvisor.DEFAULT_ORDER - 1).build());
+                .order(ToolCallingAdvisor.DEFAULT_ORDER - 2).build());
         developmentLoggers.forEach(logger -> builder.defaultAdvisors(logger));
-        client = builder.defaultSystem(prompt.getContentAsString(StandardCharsets.UTF_8))
+        client = builder.defaultSystem(prompt.getContentAsString(StandardCharsets.UTF_8) + "\n" + KnowledgeRag.RULES)
                 .defaultToolCallbacks(tools.callbacks()).build();
     }
 
@@ -50,17 +51,23 @@ public class WorldAgentService {
     }
 
     public ChatResponse chat(String message, OpenAiChatOptions.Builder options, UUID conversationId, String missionId) {
-        return memory.inConversation(conversationId.toString(),
-                () -> chatTurn(message, options, conversationId, missionId));
+        return chat(message, options, conversationId, missionId, null);
     }
 
-    private ChatResponse chatTurn(String message, OpenAiChatOptions.Builder options, UUID conversationId, String missionId) {
+    public ChatResponse chat(String message, OpenAiChatOptions.Builder options, UUID conversationId, String missionId,
+            KnowledgeRag.Session rag) {
+        return memory.inConversation(conversationId.toString(),
+                () -> chatTurn(message, options, conversationId, missionId, rag));
+    }
+
+    private ChatResponse chatTurn(String message, OpenAiChatOptions.Builder options, UUID conversationId, String missionId, KnowledgeRag.Session rag) {
         var context = new AgentRequestContext(UUID.randomUUID(), conversationId, missionId);
         try {
             var request = client.prompt().messages(new UserMessage(message))
                     .advisors(new AgentIterationLogger(context))
                     .advisors(spec -> spec.param(AgentRequestContext.KEY, context)
                             .param(ChatMemory.CONVERSATION_ID, conversationId.toString()));
+            if (rag != null) request.advisors(rag.advisor());
             if (options != null) request.options(options);
             var response = request.call().chatResponse();
             if (response == null || response.getResult() == null || response.getResult().getOutput() == null

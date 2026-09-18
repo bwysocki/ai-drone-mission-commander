@@ -19,7 +19,7 @@ public class DevelopmentLoggingAdvisor implements CallAdvisor {
     public String getName() { return "DevelopmentLoggingAdvisor"; }
 
     @Override
-    public int getOrder() { return ToolCallingAdvisor.DEFAULT_ORDER - 3; }
+    public int getOrder() { return ToolCallingAdvisor.DEFAULT_ORDER - 4; }
 
     @Override
     public ChatClientResponse adviseCall(ChatClientRequest request, CallAdvisorChain chain) {
